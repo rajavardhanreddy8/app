@@ -140,13 +140,19 @@ class USPTODataDownloader:
         import random
         random.seed(42)
         
-        for _ in range(500):  # Create 500 sample reactions
+        for _ in range(1200):  # Create 1200 sample reactions for better ML training
             rxn = random.choice(base_reactions).copy()
-            # Add some variation
+            # Add realistic variations
             if rxn.get('yield'):
-                rxn['yield'] = max(30, min(98, rxn['yield'] + random.uniform(-10, 10)))
+                # More realistic yield distribution
+                base_yield = rxn['yield']
+                variation = random.gauss(0, 8)  # Normal distribution
+                rxn['yield'] = max(30, min(98, base_yield + variation))
             if rxn.get('temperature') is not None:
-                rxn['temperature'] = rxn['temperature'] + random.uniform(-5, 5)
+                rxn['temperature'] = rxn['temperature'] + random.uniform(-10, 10)
+            # Add some reactions without catalyst for variety
+            if random.random() > 0.8 and 'catalyst' in rxn:
+                rxn['catalyst'] = None
             sample_reactions.append(rxn)
         
         # Write as compressed JSON
