@@ -17,6 +17,8 @@ from services.molecular_service import MolecularService
 from services.synthesis_copilot import SynthesisCopilot
 from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
+from services.template_extractor import TemplateExtractor
+from services.equipment_recommender import EquipmentRecommender
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,10 +34,13 @@ molecular_service = MolecularService()
 copilot_service = None  # Will be initialized after env check
 condition_predictor = ConditionPredictor()
 route_scorer = EnhancedRouteScorer()
+template_extractor = TemplateExtractor()
+equipment_recommender = EquipmentRecommender()
 
-# Load ML models on startup
+# Load ML models and templates on startup
 condition_predictor.load_models()
-logging.info("ML models loading...")
+template_extractor.load_templates()
+logging.info("ML models and templates loading...")
 
 # Create the main app without a prefix
 app = FastAPI(
@@ -292,6 +297,70 @@ async def compare_routes(request: RouteComparisonRequest):
         raise
     except Exception as e:
         logging.error(f"Route comparison failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ TEMPLATE & EQUIPMENT ENDPOINTS ============
+
+@api_router.get("/templates/stats")
+async def get_template_statistics():
+    """Get reaction template database statistics."""
+    try:
+        stats = template_extractor.get_statistics()
+        return {'status': 'success', 'statistics': stats}
+    except Exception as e:
+        logging.error(f"Template stats failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/templates/{reaction_type}")
+async def get_templates_by_type(reaction_type: str):
+    """Get templates for a specific reaction type."""
+    try:
+        templates = template_extractor.get_templates_for_reaction_type(reaction_type)
+        if templates:
+            return {'status': 'success', 'reaction_type': reaction_type, 'templates': templates}
+        else:
+            raise HTTPException(status_code=404, detail=f"No templates found for {reaction_type}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Template retrieval failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class EquipmentRequest(BaseModel):
+    reaction_type: str
+    scale_mg: float
+    temperature_c: Optional[float] = None
+    pressure_atm: Optional[float] = None
+
+@api_router.post("/equipment/recommend")
+async def recommend_equipment(request: EquipmentRequest):
+    """
+    Recommend laboratory equipment for a reaction.
+    
+    Returns reactor recommendations with scoring and reasoning.
+    """
+    try:
+        recommendations = equipment_recommender.recommend_reactor(
+            reaction_type=request.reaction_type,
+            scale_mg=request.scale_mg,
+            temperature_c=request.temperature_c,
+            pressure_atm=request.pressure_atm
+        )
+        
+        complete_setup = equipment_recommender.recommend_complete_setup(
+            reaction_type=request.reaction_type,
+            scale_mg=request.scale_mg,
+            temperature_c=request.temperature_c
+        )
+        
+        return {
+            'status': 'success',
+            'reactor_recommendations': recommendations,
+            'complete_setup': complete_setup
+        }
+        
+    except Exception as e:
+        logging.error(f"Equipment recommendation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app
