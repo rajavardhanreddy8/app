@@ -6,7 +6,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 
@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from models.chemistry import SynthesisRequest, SynthesisResponse, MolecularStructure
 from services.orchestrator import SynthesisPlanningOrchestrator
 from services.molecular_service import MolecularService
+from services.synthesis_copilot import SynthesisCopilot
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,6 +27,7 @@ db = client[os.environ['DB_NAME']]
 # Initialize services
 orchestrator = None  # Will be initialized after env check
 molecular_service = MolecularService()
+copilot_service = None  # Will be initialized after env check
 
 # Create the main app without a prefix
 app = FastAPI(
@@ -162,6 +164,42 @@ async def get_synthesis_history(limit: int = 10):
         history = await db.synthesis_plans.find({}, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
         return {"history": history}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ AI COPILOT ENDPOINTS ============
+
+class CopilotQuery(BaseModel):
+    query: str
+    route_data: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None
+
+@api_router.post("/copilot/optimize")
+async def copilot_optimize(request: CopilotQuery):
+    """
+    AI Copilot for synthesis optimization.
+    
+    Natural language queries like:
+    - "How can I reduce the cost?"
+    - "Increase the yield"
+    - "Make it faster"
+    - "Predict yield for this reaction"
+    """
+    global copilot_service
+    
+    # Initialize copilot if needed
+    if copilot_service is None:
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        copilot_service = SynthesisCopilot(claude_api_key=api_key)
+    
+    try:
+        result = await copilot_service.process_query(
+            user_query=request.query,
+            current_route=request.route_data,
+            context=request.context
+        )
+        return result
+    except Exception as e:
+        logging.error(f"Copilot query failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app

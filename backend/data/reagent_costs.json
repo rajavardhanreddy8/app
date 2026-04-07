@@ -1,0 +1,127 @@
+{
+  "CCO": {
+    "name": "Ethanol",
+    "price_per_gram": 0.05,
+    "category": "solvent"
+  },
+  "C1CCOC1": {
+    "name": "THF",
+    "price_per_gram": 0.15,
+    "category": "solvent"
+  },
+  "ClCCl": {
+    "name": "DCM",
+    "price_per_gram": 0.08,
+    "category": "solvent"
+  },
+  "CC(=O)C": {
+    "name": "Acetone",
+    "price_per_gram": 0.15,
+    "category": "building_block"
+  },
+  "CN(C)C=O": {
+    "name": "DMF",
+    "price_per_gram": 0.12,
+    "category": "solvent"
+  },
+  "c1ccncc1": {
+    "name": "Pyridine",
+    "price_per_gram": 0.2,
+    "category": "solvent"
+  },
+  "CC(=O)O": {
+    "name": "Acetic acid",
+    "price_per_gram": 0.1,
+    "category": "reagent"
+  },
+  "[H]Cl": {
+    "name": "HCl",
+    "price_per_gram": 0.05,
+    "category": "acid"
+  },
+  "[H]OS(=O)(=O)O": {
+    "name": "H2SO4",
+    "price_per_gram": 0.02,
+    "category": "acid"
+  },
+  "[Na+].[OH-]": {
+    "name": "NaOH",
+    "price_per_gram": 0.03,
+    "category": "base"
+  },
+  "[Pd]": {
+    "name": "Pd catalyst",
+    "price_per_gram": 45.0,
+    "category": "catalyst"
+  },
+  "[AlH3]": {
+    "name": "AlCl3",
+    "price_per_gram": 0.8,
+    "category": "catalyst"
+  },
+  "[BH4-].[Na+]": {
+    "name": "NaBH4",
+    "price_per_gram": 1.5,
+    "category": "reducing_agent"
+  },
+  "c1ccccc1": {
+    "name": "Benzene",
+    "price_per_gram": 0.25,
+    "category": "building_block"
+  },
+  "Cc1ccccc1": {
+    "name": "Toluene",
+    "price_per_gram": 0.18,
+    "category": "building_block"
+  },
+  "c1ccc(Br)cc1": {
+    "name": "Bromobenzene",
+    "price_per_gram": 1.2,
+    "category": "building_block"
+  },
+  "c1ccc(N)cc1": {
+    "name": "Aniline",
+    "price_per_gram": 0.85,
+    "category": "building_block"
+  },
+  "CC(=O)Cl": {
+    "name": "Acetyl chloride",
+    "price_per_gram": 0.65,
+    "category": "reagent"
+  },
+  "CCBr": {
+    "name": "Ethyl bromide",
+    "price_per_gram": 0.9,
+    "category": "alkylating_agent"
+  },
+  "CI": {
+    "name": "Methyl iodide",
+    "price_per_gram": 1.8,
+    "category": "alkylating_agent"
+  },
+  "CC(=O)CC(=O)C": {
+    "name": "Acetylacetone",
+    "price_per_gram": 0.95,
+    "category": "building_block"
+  },
+  "c1ccccc1C=O": {
+    "name": "Benzaldehyde",
+    "price_per_gram": 0.75,
+    "category": "building_block"
+  },
+  "c1ccc(B(O)O)cc1": {
+    "name": "Phenylboronic acid",
+    "price_per_gram": 3.5,
+    "category": "coupling_reagent"
+  },
+  "CN": {
+    "name": "Methylamine",
+    "price_per_gram": 1.2,
+    "category": "building_block"
+  },
+  "CCN": {
+    "name": "Ethylamine",
+    "price_per_gram": 1.0,
+    "category": "building_block"
+  }
+}
