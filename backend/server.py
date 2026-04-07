@@ -15,6 +15,8 @@ from models.chemistry import SynthesisRequest, SynthesisResponse, MolecularStruc
 from services.orchestrator import SynthesisPlanningOrchestrator
 from services.molecular_service import MolecularService
 from services.synthesis_copilot import SynthesisCopilot
+from services.condition_predictor import ConditionPredictor
+from services.enhanced_route_scorer import EnhancedRouteScorer
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -28,6 +30,12 @@ db = client[os.environ['DB_NAME']]
 orchestrator = None  # Will be initialized after env check
 molecular_service = MolecularService()
 copilot_service = None  # Will be initialized after env check
+condition_predictor = ConditionPredictor()
+route_scorer = EnhancedRouteScorer()
+
+# Load ML models on startup
+condition_predictor.load_models()
+logging.info("ML models loading...")
 
 # Create the main app without a prefix
 app = FastAPI(
@@ -200,6 +208,90 @@ async def copilot_optimize(request: CopilotQuery):
         return result
     except Exception as e:
         logging.error(f"Copilot query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ CONDITION PREDICTION ENDPOINTS ============
+
+class ConditionPredictionRequest(BaseModel):
+    reactants: List[str]
+    products: List[str]
+    reaction_type: Optional[str] = None
+
+@api_router.post("/conditions/predict")
+async def predict_conditions(request: ConditionPredictionRequest):
+    """
+    Predict optimal reaction conditions using ML.
+    
+    Returns temperature, catalyst, solvent predictions with confidence scores.
+    """
+    try:
+        reaction_dict = {
+            'reactants': request.reactants,
+            'products': request.products,
+            'reaction_type': request.reaction_type or 'unknown'
+        }
+        
+        conditions = condition_predictor.predict_conditions(reaction_dict)
+        
+        return {
+            'status': 'success',
+            'conditions': conditions
+        }
+        
+    except Exception as e:
+        logging.error(f"Condition prediction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ ROUTE COMPARISON ENDPOINT ============
+
+class RouteComparisonRequest(BaseModel):
+    routes: List[Dict[str, Any]]
+    optimize_for: str = "balanced"
+
+@api_router.post("/routes/compare")
+async def compare_routes(request: RouteComparisonRequest):
+    """
+    Compare multiple synthesis routes using ML-powered scoring.
+    
+    Returns routes ranked by score with detailed metrics.
+    """
+    try:
+        from models.chemistry import SynthesisRoute
+        
+        # Convert dict routes to SynthesisRoute objects
+        route_objects = []
+        for route_data in request.routes:
+            try:
+                route = SynthesisRoute(**route_data)
+                route_objects.append(route)
+            except:
+                continue
+        
+        if not route_objects:
+            raise HTTPException(status_code=400, detail="No valid routes provided")
+        
+        # Score routes
+        scored_routes = route_scorer.compare_routes(route_objects, request.optimize_for)
+        
+        # Convert back to dicts for JSON response
+        results = []
+        for scored in scored_routes:
+            results.append({
+                'route': scored['route'].model_dump(),
+                'score': scored['score'],
+                'metrics': scored['metrics']
+            })
+        
+        return {
+            'status': 'success',
+            'ranked_routes': results,
+            'optimization_goal': request.optimize_for
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Route comparison failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app
