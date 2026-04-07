@@ -363,6 +363,135 @@ async def recommend_equipment(request: EquipmentRequest):
         logging.error(f"Equipment recommendation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============ FEEDBACK LOOP ENDPOINT ============
+
+class FeedbackRequest(BaseModel):
+    request_id: Optional[str] = None
+    target_smiles: str
+    predicted_yield: Optional[float] = None
+    actual_yield: Optional[float] = None
+    predicted_temperature: Optional[float] = None
+    actual_temperature: Optional[float] = None
+    predicted_conditions: Optional[Dict[str, Any]] = None
+    actual_conditions: Optional[Dict[str, Any]] = None
+    success: bool
+    notes: Optional[str] = None
+
+@api_router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit feedback on predicted vs actual results.
+    
+    Stores predicted vs actual yield, conditions, and success/failure.
+    Used to track model accuracy and enable future learning.
+    """
+    try:
+        doc = request.model_dump()
+        doc["feedback_id"] = str(uuid.uuid4())
+        doc["timestamp"] = datetime.now(timezone.utc).isoformat()
+        
+        # Calculate errors if both predicted and actual provided
+        if request.predicted_yield is not None and request.actual_yield is not None:
+            doc["yield_error"] = abs(request.predicted_yield - request.actual_yield)
+        
+        if request.predicted_temperature is not None and request.actual_temperature is not None:
+            doc["temperature_error"] = abs(request.predicted_temperature - request.actual_temperature)
+        
+        await db.feedback.insert_one(doc)
+        
+        return {
+            "status": "success",
+            "feedback_id": doc["feedback_id"],
+            "message": "Feedback recorded. Thank you for helping improve predictions."
+        }
+    except Exception as e:
+        logging.error(f"Feedback submission failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/feedback/stats")
+async def get_feedback_stats():
+    """Get summary statistics from the feedback database."""
+    try:
+        total = await db.feedback.count_documents({})
+        successful = await db.feedback.count_documents({"success": True})
+        
+        # Compute yield MAE from feedback entries that have yield_error
+        yield_errors = []
+        temp_errors = []
+        
+        async for doc in db.feedback.find({"yield_error": {"$exists": True}}, {"_id": 0, "yield_error": 1}):
+            yield_errors.append(doc["yield_error"])
+        
+        async for doc in db.feedback.find({"temperature_error": {"$exists": True}}, {"_id": 0, "temperature_error": 1}):
+            temp_errors.append(doc["temperature_error"])
+        
+        yield_mae = round(sum(yield_errors) / len(yield_errors), 2) if yield_errors else None
+        temp_mae = round(sum(temp_errors) / len(temp_errors), 2) if temp_errors else None
+        success_rate = round(successful / total * 100, 1) if total > 0 else None
+        
+        return {
+            "status": "success",
+            "total_feedback": total,
+            "successful_reactions": successful,
+            "success_rate_percent": success_rate,
+            "yield_prediction_mae": yield_mae,
+            "temperature_prediction_mae_celsius": temp_mae,
+            "yield_samples": len(yield_errors),
+            "temperature_samples": len(temp_errors)
+        }
+    except Exception as e:
+        logging.error(f"Feedback stats failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ VALIDATION METRICS ENDPOINT ============
+
+# In-memory latency tracker (resets on restart)
+_latency_log: List[float] = []
+
+@api_router.get("/metrics/validation")
+async def get_validation_metrics():
+    """
+    Returns live validation and performance metrics.
+    
+    Tracks:
+    - Yield prediction error (MAE from feedback)
+    - Temperature prediction error (MAE from feedback)
+    - API latency stats
+    - Route success rate
+    - Total synthesis plans generated
+    """
+    try:
+        # Feedback-derived metrics
+        feedback_stats = await get_feedback_stats()
+        
+        # Synthesis history stats
+        total_plans = await db.synthesis_plans.count_documents({})
+        
+        # Latency stats
+        latency_stats = {}
+        if _latency_log:
+            latency_stats = {
+                "avg_ms": round(sum(_latency_log) / len(_latency_log), 1),
+                "min_ms": round(min(_latency_log), 1),
+                "max_ms": round(max(_latency_log), 1),
+                "samples": len(_latency_log)
+            }
+        
+        return {
+            "status": "success",
+            "metrics": {
+                "yield_prediction_mae": feedback_stats.get("yield_prediction_mae"),
+                "temperature_prediction_mae_celsius": feedback_stats.get("temperature_prediction_mae_celsius"),
+                "route_success_rate_percent": feedback_stats.get("success_rate_percent"),
+                "total_feedback_entries": feedback_stats.get("total_feedback"),
+                "total_synthesis_plans": total_plans,
+                "api_latency": latency_stats if latency_stats else "No latency data yet",
+            }
+        }
+    except Exception as e:
+        logging.error(f"Metrics endpoint failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Include the router in the main app
 app.include_router(api_router)
 

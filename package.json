@@ -1,0 +1,27 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "An AI-powered chemistry synthesis planning platform that uses Claude Sonnet 4.5 and RDKit to generate optimal chemical synthesis routes with high yield and low cost optimization.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rajavardhanreddy8/app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/rajavardhanreddy8/app/issues"
+  },
+  "homepage": "https://github.com/rajavardhanreddy8/app#readme",
+  "dependencies": {
+    "mongodb-memory-server": "^11.0.1"
+  }
+}
