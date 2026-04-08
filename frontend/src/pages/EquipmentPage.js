@@ -197,17 +197,17 @@ const EquipmentPage = () => {
                           </div>
                           <div>
                             <span className="text-white font-semibold">
-                              {rec.name || rec.reactor_type || `Reactor ${idx + 1}`}
+                              {rec.name || rec.reactor || rec.reactor_type || `Reactor ${idx + 1}`}
                             </span>
                             <div className="flex gap-1 mt-1">
-                              {getScoreStars(rec.score)}
+                              {getScoreStars(rec.score > 1 ? rec.score / 100 : rec.score)}
                             </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
                           {rec.score && (
                             <Badge className="bg-indigo-600/30 text-indigo-200">
-                              Score: {(rec.score * 100).toFixed(0)}%
+                              Score: {rec.score > 1 ? rec.score : (rec.score * 100).toFixed(0) + "%"}
                             </Badge>
                           )}
                           {expandedReactor === idx ? (

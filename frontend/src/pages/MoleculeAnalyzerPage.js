@@ -186,7 +186,7 @@ const MoleculeAnalyzerPage = () => {
               icon={Ruler}
               label="TPSA"
               value={result.tpsa}
-              unit="\u00C5\u00B2"
+              unit="Å²"
               color="text-orange-400"
             />
             <PropertyCard
