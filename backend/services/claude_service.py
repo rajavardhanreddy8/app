@@ -13,6 +13,11 @@ class ClaudeService:
         self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
         self.demo_mode = os.getenv('DEMO_MODE', 'false').lower() == 'true'
         
+        # Bug Fix 3: Always initialize client attribute to avoid AttributeError
+        self.client = None
+        self.model = "claude-sonnet-4-20250514"  # Latest Claude Sonnet 4.5
+        self.max_tokens = 4096
+        
         if not self.demo_mode:
             if not self.api_key:
                 logger.warning("ANTHROPIC_API_KEY not found, switching to demo mode")
@@ -20,11 +25,10 @@ class ClaudeService:
             else:
                 try:
                     self.client = AsyncAnthropic(api_key=self.api_key)
-                    self.model = "claude-sonnet-4-20250514"  # Latest Claude Sonnet 4.5
-                    self.max_tokens = 4096
                 except Exception as e:
                     logger.error(f"Failed to initialize Claude client: {str(e)}, switching to demo mode")
                     self.demo_mode = True
+                    self.client = None
     
     async def plan_synthesis(
         self,

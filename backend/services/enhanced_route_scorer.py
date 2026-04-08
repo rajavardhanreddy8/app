@@ -236,3 +236,41 @@ class EnhancedRouteScorer:
         )
         
         return float(min(100, max(0, score)))
+    
+    def compare_routes(
+        self, 
+        routes: List[SynthesisRoute], 
+        optimize_for: str = "balanced"
+    ) -> List[Dict[str, Any]]:
+        """Compare multiple synthesis routes and return them ranked by score."""
+        
+        scored_routes = []
+        
+        for route in routes:
+            try:
+                result = self.score_route(route, optimize_for)
+                scored_routes.append({
+                    'route': route,
+                    'score': result['score'],
+                    'metrics': result['metrics']
+                })
+            except Exception as e:
+                logger.error(f"Failed to score route: {str(e)}")
+                # Include route with default score
+                scored_routes.append({
+                    'route': route,
+                    'score': route.score or 0.0,
+                    'metrics': {
+                        'overall_yield': route.overall_yield_percent,
+                        'total_cost': route.total_cost_usd,
+                        'num_steps': len(route.steps),
+                        'total_time_hours': route.total_time_hours,
+                        'complexity': 50.0,
+                        'feasibility': 50.0
+                    }
+                })
+        
+        # Sort by score descending
+        scored_routes.sort(key=lambda x: x['score'], reverse=True)
+        
+        return scored_routes

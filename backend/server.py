@@ -167,6 +167,8 @@ async def analyze_molecule(request: MoleculeValidationRequest):
             raise HTTPException(status_code=400, detail=analysis.get("error"))
         
         return analysis
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -258,22 +260,42 @@ async def compare_routes(request: RouteComparisonRequest):
     """
     Compare multiple synthesis routes using ML-powered scoring.
     
+    Bug Fix 4 & 5: Improved validation and error messages.
+    
+    Required fields in each route:
+    - target_molecule: {smiles: str} 
+    - starting_materials: [{smiles: str}]
+    - steps: [{reactants: [...], product: {...}, reaction_type: str, estimated_yield_percent: float}]
+    - overall_yield_percent: float
+    - total_cost_usd: float
+    - total_time_hours: float
+    - score: float
+    
     Returns routes ranked by score with detailed metrics.
     """
     try:
         from models.chemistry import SynthesisRoute
         
-        # Convert dict routes to SynthesisRoute objects
+        # Convert dict routes to SynthesisRoute objects with better error handling
         route_objects = []
-        for route_data in request.routes:
+        errors = []
+        
+        for idx, route_data in enumerate(request.routes):
             try:
+                # Validate required fields before attempting conversion
+                if 'target_molecule' not in route_data:
+                    errors.append(f"Route {idx}: Missing required field 'target_molecule'")
+                    continue
+                
                 route = SynthesisRoute(**route_data)
                 route_objects.append(route)
-            except:
+            except Exception as e:
+                errors.append(f"Route {idx}: {str(e)}")
                 continue
         
         if not route_objects:
-            raise HTTPException(status_code=400, detail="No valid routes provided")
+            error_detail = "No valid routes provided. " + " | ".join(errors[:3])
+            raise HTTPException(status_code=400, detail=error_detail)
         
         # Score routes
         scored_routes = route_scorer.compare_routes(route_objects, request.optimize_for)

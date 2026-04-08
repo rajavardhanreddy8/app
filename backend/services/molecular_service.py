@@ -58,6 +58,10 @@ class MolecularService:
     def validate_smiles(smiles: str) -> Dict[str, bool]:
         """Validate SMILES string for chemical correctness."""
         try:
+            # Bug Fix 1: Check for empty string before processing
+            if not smiles or smiles.strip() == "":
+                return {"valid": False, "reason": "Empty SMILES string"}
+            
             mol = Chem.MolFromSmiles(smiles)
             
             if mol is None:
