@@ -20,6 +20,12 @@ const SynthesisPlannerPage = () => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [validationResult, setValidationResult] = useState(null);
+  
+  // Phase 4: Advanced mode state
+  const [useAdvanced, setUseAdvanced] = useState(false);
+  const [scale, setScale] = useState("lab");
+  const [batchSize, setBatchSize] = useState(0.1);
+  const [expandedRoute, setExpandedRoute] = useState(null);
 
   const validateMolecule = async (smiles) => {
     if (!smiles) return;
@@ -50,7 +56,12 @@ const SynthesisPlannerPage = () => {
     setResult(null);
 
     try {
-      const response = await axios.post(`${API}/synthesis/plan`, {
+      // Build URL with advanced parameters
+      const params = useAdvanced 
+        ? `?use_advanced=true&scale=${scale}&batch_size_kg=${batchSize}`
+        : '';
+      
+      const response = await axios.post(`${API}/synthesis/plan${params}`, {
         target_smiles: targetSmiles,
         max_steps: maxSteps,
         optimize_for: optimizeFor,
@@ -186,6 +197,64 @@ const SynthesisPlannerPage = () => {
                   </Button>
                 ))}
               </div>
+            </div>
+
+
+            <Separator className="bg-purple-500/30" />
+
+            {/* Phase 4: Advanced Mode Toggle */}
+            <div className="p-4 bg-purple-900/20 rounded-lg border border-purple-500/30">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-white font-medium">
+                  🚀 Advanced Mode (Industrial Optimization)
+                </label>
+                <button
+                  onClick={() => setUseAdvanced(!useAdvanced)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    useAdvanced ? 'bg-purple-600' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      useAdvanced ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              
+              {useAdvanced && (
+                <div className="space-y-3 pt-3 border-t border-purple-500/30">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-purple-200 mb-1">Production Scale</label>
+                      <select
+                        value={scale}
+                        onChange={(e) => setScale(e.target.value)}
+                        className="w-full bg-purple-900/40 border border-purple-500/30 rounded px-3 py-2 text-sm text-white"
+                      >
+                        <option value="lab">Lab (0.001-1 kg)</option>
+                        <option value="pilot">Pilot (1-100 kg)</option>
+                        <option value="industrial">Industrial (100+ kg)</option>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label className="block text-xs text-purple-200 mb-1">Batch Size (kg)</label>
+                      <Input
+                        type="number"
+                        value={batchSize}
+                        onChange={(e) => setBatchSize(parseFloat(e.target.value))}
+                        step={scale === 'lab' ? 0.1 : scale === 'pilot' ? 1 : 10}
+                        min={scale === 'lab' ? 0.001 : scale === 'pilot' ? 1 : 100}
+                        className="bg-purple-900/40 border-purple-500/30 text-white text-sm"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-purple-300">
+                    ✨ Uses ML retrosynthesis, scale optimization & industrial cost modeling
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Options */}

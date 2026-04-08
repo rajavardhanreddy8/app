@@ -59,10 +59,12 @@ class AdvancedCostModel:
         # 1. Reagent costs
         reagents = reaction.get('reactants', []) + reaction.get('catalysts', [])
         for reagent_smiles in reagents:
-            cost_per_gram = self.basic_cost_db.get_reagent_cost(reagent_smiles)
-            if cost_per_gram:
-                # Assume 1:1 molar ratio for simplicity, scale by batch size
-                costs['reagent_cost'] += cost_per_gram * (batch_size_kg * 1000) * 0.1
+            if reagent_smiles and reagent_smiles.strip():  # Skip empty strings
+                cost_per_gram = self.basic_cost_db.get_reagent_cost(reagent_smiles)
+                if cost_per_gram:
+                    # Assume 1:1 molar ratio for simplicity, scale by batch size
+                    # Use 10% of batch as reagent amount (more realistic)
+                    costs['reagent_cost'] += cost_per_gram * (batch_size_kg * 1000) * 0.10
         
         # 2. Energy costs
         temperature = reaction.get('temperature_c', 25.0)
@@ -93,15 +95,20 @@ class AdvancedCostModel:
                 reaction, batch_size_kg
             )
         
-        # Total cost
-        costs['total_cost'] = (
+        # Total cost (ensure recovery doesn't exceed actual costs)
+        gross_cost = (
             costs['reagent_cost'] +
             costs['energy_cost'] +
             costs['labor_cost'] +
             costs['equipment_cost'] +
-            costs['waste_disposal_cost'] -
-            costs['recovery_savings']
+            costs['waste_disposal_cost']
         )
+        
+        # Cap recovery savings at 80% of gross cost to ensure positive total
+        max_recovery = gross_cost * 0.80
+        costs['recovery_savings'] = min(costs['recovery_savings'], max_recovery)
+        
+        costs['total_cost'] = gross_cost - costs['recovery_savings']
         
         return costs
     
@@ -208,7 +215,7 @@ class AdvancedCostModel:
         # Catalyst recovery (80% recovery for precious metals)
         catalysts = reaction.get('catalysts', [])
         for cat_smiles in catalysts:
-            if 'Pd' in cat_smiles or 'Pt' in cat_smiles or 'Rh' in cat_smiles:
+            if cat_smiles and ('Pd' in cat_smiles or 'Pt' in cat_smiles or 'Rh' in cat_smiles):
                 cost_per_gram = self.basic_cost_db.get_reagent_cost(cat_smiles) or 45.0
                 catalyst_amount_g = batch_size_kg * 1000 * 0.01  # 1% catalyst loading
                 recovery_rate = 0.80
@@ -217,10 +224,11 @@ class AdvancedCostModel:
         # Solvent recovery (60% recovery via distillation)
         solvents = reaction.get('solvents', [])
         for solv_smiles in solvents:
-            cost_per_gram = self.basic_cost_db.get_reagent_cost(solv_smiles) or 0.10
-            solvent_amount_g = batch_size_kg * 1000 * 2.0  # 2:1 ratio
-            recovery_rate = 0.60
-            savings += cost_per_gram * solvent_amount_g * recovery_rate
+            if solv_smiles and solv_smiles.strip():
+                cost_per_gram = self.basic_cost_db.get_reagent_cost(solv_smiles) or 0.10
+                solvent_amount_g = batch_size_kg * 1000 * 0.5  # 0.5:1 ratio (reduced from 2:1)
+                recovery_rate = 0.60
+                savings += cost_per_gram * solvent_amount_g * recovery_rate
         
         return savings
     
