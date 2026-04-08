@@ -3,11 +3,17 @@ import sys
 import logging
 import structlog
 import time
-from typing import Dict, Any
-from models.chemistry import SynthesisRequest, SynthesisResponse
+from typing import Dict, Any, List, Optional
+from models.chemistry import SynthesisRequest, SynthesisResponse, SynthesisRoute
 from services.claude_service import ClaudeService
 from services.molecular_service import MolecularService  
 from services.synthesis_planner import SynthesisPlanner
+from services.retrosynthesis_engine import RetrosynthesisEngine
+from services.scale_aware_optimizer import ScaleAwareOptimizer
+from services.advanced_cost_model import AdvancedCostModel
+from services.yield_predictor import YieldPredictor
+from services.condition_predictor import ConditionPredictor
+from services.enhanced_route_scorer import EnhancedRouteScorer
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +40,21 @@ class SynthesisPlanningOrchestrator:
         self.claude_service = ClaudeService(api_key=api_key)
         self.molecular_service = MolecularService()
         self.synthesis_planner = SynthesisPlanner()
+        
+        # Advanced modules for Phase 4
+        self.retrosynthesis_engine = RetrosynthesisEngine()
+        self.scale_optimizer = ScaleAwareOptimizer()
+        self.cost_model = AdvancedCostModel()
+        self.yield_predictor = YieldPredictor()
+        self.condition_predictor = ConditionPredictor()
+        self.route_scorer = EnhancedRouteScorer()
+        
+        # Load ML models
+        self.yield_predictor.load_model()
+        self.condition_predictor.load_models()
+        
+        # Cost calculation cache (hybrid approach)
+        self._cost_cache = {}
         
     async def plan_synthesis(self, request: SynthesisRequest) -> SynthesisResponse:
         """Complete synthesis planning workflow."""
@@ -92,3 +113,412 @@ class SynthesisPlanningOrchestrator:
         )
         
         return response
+    
+    async def plan_synthesis_advanced(
+        self, 
+        request: SynthesisRequest,
+        num_routes: int = 5,
+        scale: str = "lab",
+        batch_size_kg: float = 0.1
+    ) -> SynthesisResponse:
+        """
+        Advanced synthesis planning with full optimization loop.
+        
+        Integrates retrosynthesis, ML prediction, scale optimization, and cost modeling.
+        Returns top N routes ranked by composite score.
+        """
+        start_time = time.time()
+        
+        logger.info(
+            "starting_advanced_synthesis_planning",
+            target_smiles=request.target_smiles,
+            max_routes=num_routes,
+            scale=scale,
+            batch_size_kg=batch_size_kg
+        )
+        
+        # Step 1: Validate target molecule
+        validation = self.molecular_service.validate_smiles(request.target_smiles)
+        if not validation.get("valid"):
+            raise ValueError(f"Invalid target SMILES: {validation.get('reason')}")
+        
+        # Step 2: Generate multiple candidate routes using retrosynthesis engine
+        logger.info("generating_candidate_routes_via_retrosynthesis")
+        candidate_routes = self.retrosynthesis_engine.search_routes(
+            target_smiles=request.target_smiles,
+            max_depth=request.max_steps,
+            max_routes=num_routes,
+            beam_width=5
+        )
+        
+        if not candidate_routes:
+            # Fallback to Claude-based planning if retrosynthesis finds nothing
+            logger.warning("retrosynthesis_found_no_routes_falling_back_to_claude")
+            return await self.plan_synthesis(request)
+        
+        logger.info(f"retrosynthesis_generated_{len(candidate_routes)}_routes")
+        
+        # Step 3: Optimization loop - enhance each route
+        optimized_routes = []
+        
+        for idx, route_data in enumerate(candidate_routes):
+            try:
+                logger.info(f"optimizing_route_{idx+1}")
+                
+                # Convert to internal format for processing
+                route_dict = self._convert_retro_route_to_dict(route_data)
+                
+                # Sub-step 3a: Predict conditions for each step using ML
+                route_dict = self._predict_conditions_for_route(route_dict)
+                
+                # Sub-step 3b: Predict yields using ML
+                route_dict = self._predict_yields_for_route(route_dict)
+                
+                # Sub-step 3c: Predict reaction times
+                route_dict = self._predict_times_for_route(route_dict)
+                
+                # Sub-step 3d: Scale optimization
+                route_dict = self._optimize_for_scale(route_dict, scale, batch_size_kg)
+                
+                # Sub-step 3e: Calculate industrial costs (with hybrid caching)
+                route_dict = self._calculate_industrial_costs(route_dict, scale, batch_size_kg)
+                
+                # Sub-step 3f: Calculate composite score
+                route_dict['score'] = self._calculate_composite_score(
+                    route_dict, 
+                    request.optimize_for
+                )
+                
+                optimized_routes.append(route_dict)
+                
+            except Exception as e:
+                logger.error(f"failed_to_optimize_route_{idx+1}: {str(e)}")
+                continue
+        
+        # Step 4: Rank routes by score
+        optimized_routes.sort(key=lambda r: r.get('score', 0), reverse=True)
+        
+        # Step 5: Convert to SynthesisRoute objects
+        final_routes = []
+        for route_dict in optimized_routes[:num_routes]:
+            try:
+                synthesis_route = self._convert_dict_to_synthesis_route(route_dict, request.target_smiles)
+                final_routes.append(synthesis_route)
+            except Exception as e:
+                logger.error(f"failed_to_convert_route: {str(e)}")
+                continue
+        
+        # Step 6: Create response
+        computation_time = time.time() - start_time
+        
+        response = SynthesisResponse(
+            target_smiles=request.target_smiles,
+            routes=final_routes,
+            computation_time_seconds=round(computation_time, 2),
+            tokens_used=0  # No LLM tokens used in advanced mode
+        )
+        
+        logger.info(
+            "advanced_synthesis_planning_complete",
+            num_routes=len(final_routes),
+            computation_time=computation_time
+        )
+        
+        return response
+    
+    def _convert_retro_route_to_dict(self, retro_route: Dict) -> Dict:
+        """Convert retrosynthesis route to internal processing format."""
+        return {
+            'target': retro_route['target'],
+            'starting_materials': retro_route['starting_materials'],
+            'steps': retro_route['steps'],
+            'num_steps': retro_route['num_steps'],
+            'base_yield': retro_route.get('estimated_yield', 75.0),
+            'base_cost': retro_route.get('estimated_cost', 100.0),
+            'route_type': 'retrosynthesis'
+        }
+    
+    def _predict_conditions_for_route(self, route: Dict) -> Dict:
+        """Predict optimal conditions for each step using ML."""
+        for step in route['steps']:
+            try:
+                reaction_dict = {
+                    'reactants': step.get('reactants', []),
+                    'products': [step.get('product', '')],
+                    'reaction_type': step.get('reaction_type', 'unknown')
+                }
+                
+                conditions = self.condition_predictor.predict_conditions(reaction_dict)
+                
+                # Update step with predicted conditions
+                step['predicted_conditions'] = {
+                    'temperature_celsius': conditions.get('temperature_celsius', 25.0),
+                    'catalyst': conditions.get('catalyst', 'None'),
+                    'solvent': conditions.get('solvent', 'THF'),
+                    'confidence': conditions.get('confidence', 'medium')
+                }
+                
+            except Exception as e:
+                logger.error(f"condition_prediction_failed: {str(e)}")
+                # Use defaults
+                step['predicted_conditions'] = {
+                    'temperature_celsius': 25.0,
+                    'catalyst': 'None',
+                    'solvent': 'THF',
+                    'confidence': 'low'
+                }
+        
+        return route
+    
+    def _predict_yields_for_route(self, route: Dict) -> Dict:
+        """Predict yields for each step using ML."""
+        overall_yield = 100.0
+        
+        for step in route['steps']:
+            try:
+                reaction_dict = {
+                    'reactants': step.get('reactants', []),
+                    'products': [step.get('product', '')],
+                    'conditions': step.get('predicted_conditions', {})
+                }
+                
+                predicted_yield = self.yield_predictor.predict(reaction_dict)
+                
+                if predicted_yield and predicted_yield > 0:
+                    step['predicted_yield'] = round(predicted_yield, 1)
+                else:
+                    step['predicted_yield'] = 75.0  # Default
+                
+                overall_yield *= (step['predicted_yield'] / 100.0)
+                
+            except Exception as e:
+                logger.error(f"yield_prediction_failed: {str(e)}")
+                step['predicted_yield'] = 75.0
+                overall_yield *= 0.75
+        
+        route['overall_yield_percent'] = round(overall_yield, 2)
+        return route
+    
+    def _predict_times_for_route(self, route: Dict) -> Dict:
+        """Predict reaction times for each step."""
+        total_time = 0.0
+        
+        for step in route['steps']:
+            # Simple time prediction based on reaction type and conditions
+            temp = step.get('predicted_conditions', {}).get('temperature_celsius', 25.0)
+            
+            # Base time: 4 hours
+            base_time = 4.0
+            
+            # Adjust for temperature
+            if temp < 0:
+                time_hours = base_time * 1.5  # Cryogenic slower
+            elif temp > 80:
+                time_hours = base_time * 0.7  # High temp faster
+            else:
+                time_hours = base_time
+            
+            step['predicted_time_hours'] = round(time_hours, 1)
+            total_time += time_hours
+        
+        route['total_time_hours'] = round(total_time, 1)
+        return route
+    
+    def _optimize_for_scale(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
+        """Apply scale-aware optimization."""
+        try:
+            # Optimize each step for scale
+            for step in route['steps']:
+                reaction_dict = {
+                    'catalyst_loading': 5.0,
+                    'solvent_volume_ml_per_g': 10.0,
+                    'time_hours': step.get('predicted_time_hours', 4.0),
+                    'yield_percent': step.get('predicted_yield', 75.0),
+                    'temperature_c': step.get('predicted_conditions', {}).get('temperature_celsius', 25.0)
+                }
+                
+                scale_adjustments = self.scale_optimizer.optimize_for_scale(
+                    reaction_dict, scale, batch_size_kg
+                )
+                
+                step['scale_optimization'] = scale_adjustments
+                
+                # Adjust yield based on scale
+                step['scale_adjusted_yield'] = scale_adjustments.get('predicted_yield_percent', step['predicted_yield'])
+            
+            # Recalculate overall yield with scale adjustments
+            overall_yield = 100.0
+            for step in route['steps']:
+                overall_yield *= (step['scale_adjusted_yield'] / 100.0)
+            
+            route['scale_adjusted_overall_yield'] = round(overall_yield, 2)
+            route['scale'] = scale
+            route['batch_size_kg'] = batch_size_kg
+            
+        except Exception as e:
+            logger.error(f"scale_optimization_failed: {str(e)}")
+            route['scale_adjusted_overall_yield'] = route.get('overall_yield_percent', 75.0)
+        
+        return route
+    
+    def _calculate_industrial_costs(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
+        """Calculate industrial costs with hybrid caching."""
+        total_cost = 0.0
+        cost_breakdown = {
+            'reagent_cost': 0.0,
+            'energy_cost': 0.0,
+            'labor_cost': 0.0,
+            'equipment_cost': 0.0,
+            'waste_disposal_cost': 0.0
+        }
+        
+        for step in route['steps']:
+            try:
+                # Create cache key
+                cache_key = f"{step.get('product', '')}_{scale}_{batch_size_kg}"
+                
+                # Check cache (hybrid approach)
+                if cache_key in self._cost_cache:
+                    step_cost = self._cost_cache[cache_key]
+                    logger.debug(f"cost_cache_hit: {cache_key}")
+                else:
+                    # Calculate cost using advanced model
+                    reaction_dict = {
+                        'reactants': step.get('reactants', []),
+                        'products': [step.get('product', '')],
+                        'catalysts': [step.get('predicted_conditions', {}).get('catalyst', '')],
+                        'solvents': [step.get('predicted_conditions', {}).get('solvent', 'THF')],
+                        'temperature_c': step.get('predicted_conditions', {}).get('temperature_celsius', 25.0),
+                        'time_hours': step.get('predicted_time_hours', 4.0)
+                    }
+                    
+                    step_cost = self.cost_model.calculate_total_cost(
+                        reaction_dict,
+                        scale=scale,
+                        batch_size_kg=batch_size_kg / route['num_steps'],  # Distribute batch size
+                        include_recovery=(scale in ['pilot', 'industrial'])
+                    )
+                    
+                    # Cache the result
+                    self._cost_cache[cache_key] = step_cost
+                
+                step['cost_breakdown'] = step_cost
+                total_cost += step_cost['total_cost']
+                
+                # Aggregate breakdown
+                for key in cost_breakdown:
+                    if key in step_cost:
+                        cost_breakdown[key] += step_cost[key]
+                
+            except Exception as e:
+                logger.error(f"cost_calculation_failed: {str(e)}")
+                step['cost_breakdown'] = {'total_cost': 50.0}
+                total_cost += 50.0
+        
+        route['total_cost_usd'] = round(total_cost, 2)
+        route['cost_breakdown'] = {k: round(v, 2) for k, v in cost_breakdown.items()}
+        
+        return route
+    
+    def _calculate_composite_score(self, route: Dict, optimize_for: str) -> float:
+        """Calculate composite score based on yield, cost, time, and steps."""
+        
+        # Normalize metrics (0-100 scale)
+        yield_score = route.get('scale_adjusted_overall_yield', 75.0)
+        
+        # Cost score (inverse, lower is better)
+        cost = route.get('total_cost_usd', 100.0)
+        cost_score = max(0, 100 - (cost / 10.0))  # Normalize assuming $1000 = 0 score
+        
+        # Time score (inverse, lower is better)
+        time = route.get('total_time_hours', 10.0)
+        time_score = max(0, 100 - (time * 2))  # Normalize assuming 50h = 0 score
+        
+        # Steps penalty (fewer is better)
+        steps = route.get('num_steps', 3)
+        step_score = max(0, 100 - (steps * 10))
+        
+        # Weights based on optimization goal
+        if optimize_for == 'yield':
+            weights = {'yield': 0.6, 'cost': 0.1, 'time': 0.1, 'steps': 0.2}
+        elif optimize_for == 'cost':
+            weights = {'yield': 0.2, 'cost': 0.5, 'time': 0.1, 'steps': 0.2}
+        elif optimize_for == 'time':
+            weights = {'yield': 0.2, 'cost': 0.1, 'time': 0.5, 'steps': 0.2}
+        else:  # balanced
+            weights = {'yield': 0.35, 'cost': 0.30, 'time': 0.15, 'steps': 0.20}
+        
+        composite_score = (
+            weights['yield'] * yield_score +
+            weights['cost'] * cost_score +
+            weights['time'] * time_score +
+            weights['steps'] * step_score
+        )
+        
+        return round(composite_score, 2)
+    
+    def _convert_dict_to_synthesis_route(self, route_dict: Dict, target_smiles: str) -> SynthesisRoute:
+        """Convert internal route dict to SynthesisRoute Pydantic model."""
+        from models.chemistry import SynthesisRoute, ReactionStep, MolecularStructure, ReactionCondition
+        from datetime import datetime
+        
+        # Create target molecule
+        target_mol = MolecularStructure(smiles=target_smiles)
+        
+        # Create starting materials
+        starting_materials = [
+            MolecularStructure(smiles=sm) 
+            for sm in route_dict.get('starting_materials', [])
+        ]
+        
+        # Create steps
+        steps = []
+        for step_data in route_dict.get('steps', []):
+            try:
+                # Create reactants
+                reactants = [
+                    MolecularStructure(smiles=r) 
+                    for r in step_data.get('reactants', [])
+                ]
+                
+                # Create product
+                product = MolecularStructure(smiles=step_data.get('product', ''))
+                
+                # Create conditions
+                cond_data = step_data.get('predicted_conditions', {})
+                conditions = ReactionCondition(
+                    temperature_celsius=cond_data.get('temperature_celsius', 25.0),
+                    solvent=cond_data.get('solvent', 'THF'),
+                    catalyst=cond_data.get('catalyst'),
+                    time_hours=step_data.get('predicted_time_hours', 4.0)
+                )
+                
+                # Create step
+                step = ReactionStep(
+                    reactants=reactants,
+                    product=product,
+                    reaction_type=step_data.get('reaction_type', 'Unknown'),
+                    conditions=conditions,
+                    estimated_yield_percent=step_data.get('scale_adjusted_yield', 75.0),
+                    estimated_cost_usd=step_data.get('cost_breakdown', {}).get('total_cost', 50.0)
+                )
+                
+                steps.append(step)
+                
+            except Exception as e:
+                logger.error(f"step_conversion_failed: {str(e)}")
+                continue
+        
+        # Create route
+        synthesis_route = SynthesisRoute(
+            target_molecule=target_mol,
+            starting_materials=starting_materials,
+            steps=steps,
+            overall_yield_percent=route_dict.get('scale_adjusted_overall_yield', 75.0),
+            total_cost_usd=route_dict.get('total_cost_usd', 100.0),
+            total_time_hours=route_dict.get('total_time_hours', 10.0),
+            score=route_dict.get('score', 50.0),
+            notes=f"Scale: {route_dict.get('scale', 'lab')}, Batch: {route_dict.get('batch_size_kg', 0.1)}kg"
+        )
+        
+        return synthesis_route

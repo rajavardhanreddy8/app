@@ -108,11 +108,18 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
 @api_router.post("/synthesis/plan", response_model=SynthesisResponse)
-async def plan_synthesis(request: SynthesisRequest):
+async def plan_synthesis(request: SynthesisRequest, use_advanced: bool = False, scale: str = "lab", batch_size_kg: float = 0.1):
     """
     Plan synthesis routes for a target molecule.
     
-    Returns multiple routes ranked by yield, cost, and complexity.
+    **Parameters:**
+    - `use_advanced` (bool): Use advanced planning with retrosynthesis, ML, scale optimization, and cost modeling
+    - `scale` (str): Target scale - "lab", "pilot", or "industrial" (only for use_advanced=True)
+    - `batch_size_kg` (float): Batch size in kg (only for use_advanced=True)
+    
+    **Returns:**
+    - Basic mode: Multiple routes from Claude ranked by yield, cost, and complexity
+    - Advanced mode: 5 optimized routes with full ML predictions, scale optimization, and industrial cost analysis
     """
     global orchestrator
     
@@ -127,7 +134,18 @@ async def plan_synthesis(request: SynthesisRequest):
         orchestrator = SynthesisPlanningOrchestrator(api_key=api_key)
     
     try:
-        result = await orchestrator.plan_synthesis(request)
+        # Route to advanced or basic planning
+        if use_advanced:
+            logger.info(f"using_advanced_synthesis_planning: scale={scale}, batch={batch_size_kg}kg")
+            result = await orchestrator.plan_synthesis_advanced(
+                request=request,
+                num_routes=5,
+                scale=scale,
+                batch_size_kg=batch_size_kg
+            )
+        else:
+            logger.info("using_basic_synthesis_planning")
+            result = await orchestrator.plan_synthesis(request)
         
         # Store in MongoDB for history
         doc = result.model_dump()
@@ -384,6 +402,124 @@ async def recommend_equipment(request: EquipmentRequest):
         
     except Exception as e:
         logging.error(f"Equipment recommendation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# ============ PHASE 4: ADVANCED MODULE ENDPOINTS ============
+
+class RetrosynthesisRequest(BaseModel):
+    target_smiles: str
+    max_depth: int = 5
+    max_routes: int = 5
+
+@api_router.post("/retrosynthesis/plan")
+async def plan_retrosynthesis(request: RetrosynthesisRequest):
+    """
+    Generate retrosynthesis routes using tree-based search.
+    
+    Returns multiple disconnection strategies ranked by feasibility.
+    """
+    try:
+        from services.retrosynthesis_engine import RetrosynthesisEngine
+        
+        engine = RetrosynthesisEngine()
+        
+        routes = engine.search_routes(
+            target_smiles=request.target_smiles,
+            max_depth=request.max_depth,
+            max_routes=request.max_routes,
+            beam_width=5
+        )
+        
+        return {
+            'status': 'success',
+            'target_smiles': request.target_smiles,
+            'num_routes': len(routes),
+            'routes': routes
+        }
+        
+    except Exception as e:
+        logging.error(f"Retrosynthesis planning failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ScaleOptimizationRequest(BaseModel):
+    reaction: Dict[str, Any]
+    target_scale: str = "lab"  # "lab", "pilot", or "industrial"
+    batch_size_kg: float = 0.1
+
+@api_router.post("/scale/optimize")
+async def optimize_for_scale(request: ScaleOptimizationRequest):
+    """
+    Optimize reaction parameters for specific production scale.
+    
+    Returns scale-adjusted conditions, yield predictions, and recommendations.
+    """
+    try:
+        from services.scale_aware_optimizer import ScaleAwareOptimizer
+        
+        optimizer = ScaleAwareOptimizer()
+        
+        # Validate scale
+        if request.target_scale not in ['lab', 'pilot', 'industrial']:
+            raise HTTPException(
+                status_code=400,
+                detail="target_scale must be 'lab', 'pilot', or 'industrial'"
+            )
+        
+        result = optimizer.optimize_for_scale(
+            reaction=request.reaction,
+            target_scale=request.target_scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'optimization': result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Scale optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IndustrialCostRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+    include_recovery: bool = False
+
+@api_router.post("/cost/industrial")
+async def calculate_industrial_cost(request: IndustrialCostRequest):
+    """
+    Calculate comprehensive industrial cost including reagents, energy, labor, equipment, and waste.
+    
+    Returns detailed cost breakdown with recovery savings if enabled.
+    """
+    try:
+        from services.advanced_cost_model import AdvancedCostModel
+        
+        cost_model = AdvancedCostModel()
+        
+        costs = cost_model.calculate_total_cost(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg,
+            include_recovery=request.include_recovery
+        )
+        
+        return {
+            'status': 'success',
+            'scale': request.scale,
+            'batch_size_kg': request.batch_size_kg,
+            'costs': costs
+        }
+        
+    except Exception as e:
+        logging.error(f"Industrial cost calculation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app

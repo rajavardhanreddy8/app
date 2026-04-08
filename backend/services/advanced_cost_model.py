@@ -59,9 +59,10 @@ class AdvancedCostModel:
         # 1. Reagent costs
         reagents = reaction.get('reactants', []) + reaction.get('catalysts', [])
         for reagent_smiles in reagents:
-            cost_info = self.basic_cost_db.get_or_estimate_cost(reagent_smiles)
-            # Assume 1:1 molar ratio for simplicity, scale by batch size
-            costs['reagent_cost'] += cost_info['price_per_gram'] * (batch_size_kg * 1000) * 0.1
+            cost_per_gram = self.basic_cost_db.get_reagent_cost(reagent_smiles)
+            if cost_per_gram:
+                # Assume 1:1 molar ratio for simplicity, scale by batch size
+                costs['reagent_cost'] += cost_per_gram * (batch_size_kg * 1000) * 0.1
         
         # 2. Energy costs
         temperature = reaction.get('temperature_c', 25.0)
@@ -208,18 +209,18 @@ class AdvancedCostModel:
         catalysts = reaction.get('catalysts', [])
         for cat_smiles in catalysts:
             if 'Pd' in cat_smiles or 'Pt' in cat_smiles or 'Rh' in cat_smiles:
-                cost_info = self.basic_cost_db.get_or_estimate_cost(cat_smiles)
+                cost_per_gram = self.basic_cost_db.get_reagent_cost(cat_smiles) or 45.0
                 catalyst_amount_g = batch_size_kg * 1000 * 0.01  # 1% catalyst loading
                 recovery_rate = 0.80
-                savings += cost_info['price_per_gram'] * catalyst_amount_g * recovery_rate
+                savings += cost_per_gram * catalyst_amount_g * recovery_rate
         
         # Solvent recovery (60% recovery via distillation)
         solvents = reaction.get('solvents', [])
         for solv_smiles in solvents:
-            cost_info = self.basic_cost_db.get_or_estimate_cost(solv_smiles)
+            cost_per_gram = self.basic_cost_db.get_reagent_cost(solv_smiles) or 0.10
             solvent_amount_g = batch_size_kg * 1000 * 2.0  # 2:1 ratio
             recovery_rate = 0.60
-            savings += cost_info['price_per_gram'] * solvent_amount_g * recovery_rate
+            savings += cost_per_gram * solvent_amount_g * recovery_rate
         
         return savings
     
