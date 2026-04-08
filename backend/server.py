@@ -105,6 +105,21 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
     
     return status_checks
 
+
+
+# Phase 6: Initialize chemical graph on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
+    global orchestrator
+    
+    if orchestrator:
+        try:
+            await orchestrator.initialize_graph()
+            logging.info("✓ Chemical graph initialized from MongoDB")
+        except Exception as e:
+            logging.error(f"✗ Chemical graph init failed: {str(e)}")
+
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
 @api_router.post("/synthesis/plan", response_model=SynthesisResponse)
@@ -113,7 +128,8 @@ async def plan_synthesis(
     use_advanced: bool = False, 
     scale: str = "lab", 
     batch_size_kg: float = 0.1,
-    pharma_mode: bool = False  # Phase 5: Pharma yield enforcement
+    pharma_mode: bool = False,  # Phase 5: Pharma yield enforcement
+    use_mcts: bool = False  # Phase 6: MCTS global optimization
 ):
     """
     Plan synthesis routes for a target molecule.
@@ -123,15 +139,17 @@ async def plan_synthesis(
     - `scale` (str): Target scale - "lab", "pilot", or "industrial" (only for use_advanced=True)
     - `batch_size_kg` (float): Batch size in kg (only for use_advanced=True)
     - `pharma_mode` (bool): Enforce pharma-grade ≥99% yield requirement (Phase 5)
+    - `use_mcts` (bool): Use MCTS for global route optimization instead of beam search (Phase 6)
     
     **Returns:**
     - Basic mode: Multiple routes from Claude ranked by yield, cost, and complexity
     - Advanced mode: 5 optimized routes with full ML predictions, scale optimization, and industrial cost analysis
     - Pharma mode: Only routes with ≥99% yield, optimized for cost via multi-step routes
+    - MCTS mode: Global optimization using Monte Carlo Tree Search on chemical graph
     """
     global orchestrator
     
-    # Initialize orchestrator if not done
+    # Initialize orchestrator if not done (Phase 6: with database)
     if orchestrator is None:
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
@@ -139,17 +157,19 @@ async def plan_synthesis(
                 status_code=500,
                 detail="ANTHROPIC_API_KEY not configured. Please add it to environment variables."
             )
-        orchestrator = SynthesisPlanningOrchestrator(api_key=api_key)
+        orchestrator = SynthesisPlanningOrchestrator(api_key=api_key, db=db)  # Phase 6: Pass db
     
     try:
         # Route to advanced or basic planning
         if use_advanced:
-            logger.info(f"using_advanced_synthesis_planning: scale={scale}, batch={batch_size_kg}kg")
+            logger.info(f"using_advanced_synthesis_planning: scale={scale}, batch={batch_size_kg}kg, mcts={use_mcts}, pharma={pharma_mode}")
             result = await orchestrator.plan_synthesis_advanced(
                 request=request,
                 num_routes=5,
                 scale=scale,
-                batch_size_kg=batch_size_kg
+                batch_size_kg=batch_size_kg,
+                use_mcts=use_mcts,  # Phase 6
+                pharma_mode=pharma_mode  # Phase 5
             )
         else:
             logger.info("using_basic_synthesis_planning")

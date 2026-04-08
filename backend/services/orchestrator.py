@@ -36,7 +36,14 @@ logger = structlog.get_logger()
 class SynthesisPlanningOrchestrator:
     """Orchestrates the complete synthesis planning workflow."""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, db=None):
+        """
+        Initialize orchestrator with optional database connection.
+        
+        Args:
+            api_key: Anthropic API key
+            db: MongoDB database connection (for Phase 6 graph building)
+        """
         self.claude_service = ClaudeService(api_key=api_key)
         self.molecular_service = MolecularService()
         self.synthesis_planner = SynthesisPlanner()
@@ -56,12 +63,110 @@ class SynthesisPlanningOrchestrator:
             logger.warning(f"ProcessConstraintsEngine init failed: {e}, using fallback")
             self.constraints_engine = None
         
+        # Phase 6: Chemical graph + MCTS (CRITICAL INTEGRATION)
+        self.db = db
+        self.chem_graph = None
+        self.mcts_engine = None
+        self._graph_initialized = False
+        
         # Load ML models
         self.yield_predictor.load_model()
         self.condition_predictor.load_models()
         
         # Cost calculation cache (hybrid approach)
         self._cost_cache = {}
+    
+    async def initialize_graph(self):
+        """
+        Initialize chemical graph from MongoDB reactions.
+        
+        CRITICAL: This must be called once on startup or before first MCTS search.
+        """
+        if self._graph_initialized or not self.db:
+            return
+        
+        try:
+            logger.info("initializing_chemical_graph_from_mongodb")
+            
+            # Load reactions from database
+            reactions = await self.db.reactions.find({}, {"_id": 0}).to_list(2000)
+            logger.info(f"loaded_{len(reactions)}_reactions_from_db")
+            
+            # Build graph
+            self.chem_graph = ChemicalGraph()
+            self.chem_graph.build_from_reactions(reactions)
+            
+            # Log stats
+            stats = self.chem_graph.get_graph_stats()
+            logger.info(
+                f"chemical_graph_initialized: "
+                f"{stats['num_molecules']} molecules, "
+                f"{stats['num_reactions']} reactions"
+            )
+            
+            self._graph_initialized = True
+            
+        except Exception as e:
+            logger.error(f"chemical_graph_init_failed: {str(e)}")
+            self.chem_graph = None
+
+    async def _generate_routes_mcts(
+        self,
+        target_smiles: str,
+        num_routes: int,
+        pharma_mode: bool
+    ) -> List[Dict]:
+        """
+        Generate routes using MCTS search (Phase 6).
+        
+        Args:
+            target_smiles: Target molecule
+            num_routes: Number of routes to return
+            pharma_mode: Pharma yield enforcement
+            
+        Returns:
+            List of route dicts from MCTS
+        """
+        try:
+            # Initialize MCTS engine if not done
+            if not self.mcts_engine or self.mcts_engine.pharma_mode != pharma_mode:
+                self.mcts_engine = MCTSSearch(
+                    chemical_graph=self.chem_graph,
+                    scorer=self.route_scorer,
+                    constraints_engine=self.constraints_engine,
+                    pharma_mode=pharma_mode
+                )
+            
+            # Run MCTS search
+            routes = self.mcts_engine.search(
+                target_molecule=target_smiles,
+                max_iterations=300,  # Tunable parameter
+                max_depth=6
+            )
+            
+            logger.info(f"mcts_generated_{len(routes)}_routes")
+            return routes
+            
+        except Exception as e:
+            logger.error(f"mcts_search_failed: {str(e)}, falling back to beam search")
+            # Fallback to beam search
+            return self.retrosynthesis_engine.search_routes(
+                target_smiles=target_smiles,
+                max_depth=6,
+                max_routes=num_routes,
+                beam_width=5
+            )
+
+                f"chemical_graph_initialized: "
+                f"{stats['num_molecules']} molecules, "
+                f"{stats['num_reactions']} reactions"
+            )
+            
+            self._graph_initialized = True
+            
+        except Exception as e:
+            logger.error(f"chemical_graph_init_failed: {str(e)}")
+            self.chem_graph = None
         
     async def plan_synthesis(self, request: SynthesisRequest) -> SynthesisResponse:
         """Complete synthesis planning workflow."""
@@ -126,10 +231,14 @@ class SynthesisPlanningOrchestrator:
         request: SynthesisRequest,
         num_routes: int = 5,
         scale: str = "lab",
-        batch_size_kg: float = 0.1
+        batch_size_kg: float = 0.1,
+        use_mcts: bool = False,  # Phase 6: MCTS toggle
+        pharma_mode: bool = False  # Phase 5: Pharma enforcement
     ) -> SynthesisResponse:
         """
         Advanced synthesis planning with full optimization loop.
+        
+        Phase 6: Can use MCTS for global optimization or beam search (fallback).
         
         Integrates retrosynthesis, ML prediction, scale optimization, and cost modeling.
         Returns top N routes ranked by composite score.
@@ -141,7 +250,9 @@ class SynthesisPlanningOrchestrator:
             target_smiles=request.target_smiles,
             max_routes=num_routes,
             scale=scale,
-            batch_size_kg=batch_size_kg
+            batch_size_kg=batch_size_kg,
+            use_mcts=use_mcts,
+            pharma_mode=pharma_mode
         )
         
         # Step 1: Validate target molecule
@@ -149,14 +260,25 @@ class SynthesisPlanningOrchestrator:
         if not validation.get("valid"):
             raise ValueError(f"Invalid target SMILES: {validation.get('reason')}")
         
-        # Step 2: Generate multiple candidate routes using retrosynthesis engine
-        logger.info("generating_candidate_routes_via_retrosynthesis")
-        candidate_routes = self.retrosynthesis_engine.search_routes(
-            target_smiles=request.target_smiles,
-            max_depth=request.max_steps,
-            max_routes=num_routes,
-            beam_width=5
-        )
+        # Step 2: Generate candidate routes (MCTS or Beam Search)
+        if use_mcts and self.chem_graph:
+            logger.info("using_mcts_search_for_route_generation")
+            candidate_routes = await self._generate_routes_mcts(
+                request.target_smiles,
+                num_routes,
+                pharma_mode
+            )
+        else:
+            if use_mcts and not self.chem_graph:
+                logger.warning("mcts_requested_but_graph_not_initialized_falling_back_to_beam_search")
+            
+            logger.info("using_beam_search_for_route_generation")
+            candidate_routes = self.retrosynthesis_engine.search_routes(
+                target_smiles=request.target_smiles,
+                max_depth=request.max_steps,
+                max_routes=num_routes,
+                beam_width=5
+            )
         
         if not candidate_routes:
             # Fallback to Claude-based planning if retrosynthesis finds nothing
