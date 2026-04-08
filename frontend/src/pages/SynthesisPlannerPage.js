@@ -100,22 +100,18 @@ const SynthesisPlannerPage = () => {
   ];
 
   return (
-    <div className="min-h-screen p-8">
-      <div className="max-w-7xl mx-auto">
+    <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-12">
-          <div className="flex items-center justify-center mb-4">
-            <Beaker className="w-12 h-12 text-purple-400 mr-4" />
-            <h1 className="text-5xl font-bold text-white">
+        <div className="flex items-center gap-3 mb-8">
+          <Beaker className="w-8 h-8 text-purple-400" />
+          <div>
+            <h1 className="text-3xl font-bold text-white">
               AI Synthesis Planner
             </h1>
+            <p className="text-purple-200/70 text-sm">
+              Plan optimal routes with Claude Sonnet 4.5 & RDKit
+            </p>
           </div>
-          <p className="text-xl text-purple-200">
-            Plan optimal chemical synthesis routes with AI-powered retrosynthetic analysis
-          </p>
-          <p className="text-sm text-purple-300 mt-2">
-            Powered by Claude Sonnet 4.5 & RDKit
-          </p>
         </div>
 
         {/* Input Section */}
@@ -501,7 +497,6 @@ const SynthesisPlannerPage = () => {
             </AlertDescription>
           </Alert>
         )}
-      </div>
     </div>
   );
 };

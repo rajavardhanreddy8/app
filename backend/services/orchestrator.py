@@ -157,17 +157,6 @@ class SynthesisPlanningOrchestrator:
                 beam_width=5
             )
 
-                f"chemical_graph_initialized: "
-                f"{stats['num_molecules']} molecules, "
-                f"{stats['num_reactions']} reactions"
-            )
-            
-            self._graph_initialized = True
-            
-        except Exception as e:
-            logger.error(f"chemical_graph_init_failed: {str(e)}")
-            self.chem_graph = None
-        
     async def plan_synthesis(self, request: SynthesisRequest) -> SynthesisResponse:
         """Complete synthesis planning workflow."""
         

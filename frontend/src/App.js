@@ -1,17 +1,34 @@
-import { useState } from "react";
+import React from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Layout from "@/components/Layout";
+import DashboardPage from "@/pages/DashboardPage";
 import SynthesisPlannerPage from "@/pages/SynthesisPlannerPage";
+import HistoryPage from "@/pages/HistoryPage";
+import CopilotPage from "@/pages/CopilotPage";
+import MoleculeAnalyzerPage from "@/pages/MoleculeAnalyzerPage";
+import RetrosynthesisPage from "@/pages/RetrosynthesisPage";
+import ScaleUpPage from "@/pages/ScaleUpPage";
+import ConditionPredictorPage from "@/pages/ConditionPredictorPage";
+import EquipmentPage from "@/pages/EquipmentPage";
 
 function App() {
   return (
-    <div className="App min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-      <BrowserRouter>
+    <BrowserRouter>
+      <Layout>
         <Routes>
-          <Route path="/" element={<SynthesisPlannerPage />} />
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/planner" element={<SynthesisPlannerPage />} />
+          <Route path="/retrosynthesis" element={<RetrosynthesisPage />} />
+          <Route path="/analyzer" element={<MoleculeAnalyzerPage />} />
+          <Route path="/copilot" element={<CopilotPage />} />
+          <Route path="/scale-up" element={<ScaleUpPage />} />
+          <Route path="/conditions" element={<ConditionPredictorPage />} />
+          <Route path="/equipment" element={<EquipmentPage />} />
+          <Route path="/history" element={<HistoryPage />} />
         </Routes>
-      </BrowserRouter>
-    </div>
+      </Layout>
+    </BrowserRouter>
   );
 }
 
