@@ -93,9 +93,10 @@ async def create_status_check(input: StatusCheckCreate):
     return status_obj
 
 @api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+async def get_status_checks(limit: int = 100, skip: int = 0):
+    """Get status check history with pagination support."""
+    # Exclude MongoDB's _id field from the query results with proper pagination
+    status_checks = await db.status_checks.find({}, {"_id": 0}).skip(skip).limit(min(limit, 1000)).to_list(min(limit, 1000))
     
     # Convert ISO string timestamps back to datetime objects
     for check in status_checks:
