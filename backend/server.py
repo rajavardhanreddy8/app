@@ -108,7 +108,13 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
 @api_router.post("/synthesis/plan", response_model=SynthesisResponse)
-async def plan_synthesis(request: SynthesisRequest, use_advanced: bool = False, scale: str = "lab", batch_size_kg: float = 0.1):
+async def plan_synthesis(
+    request: SynthesisRequest, 
+    use_advanced: bool = False, 
+    scale: str = "lab", 
+    batch_size_kg: float = 0.1,
+    pharma_mode: bool = False  # Phase 5: Pharma yield enforcement
+):
     """
     Plan synthesis routes for a target molecule.
     
@@ -116,10 +122,12 @@ async def plan_synthesis(request: SynthesisRequest, use_advanced: bool = False, 
     - `use_advanced` (bool): Use advanced planning with retrosynthesis, ML, scale optimization, and cost modeling
     - `scale` (str): Target scale - "lab", "pilot", or "industrial" (only for use_advanced=True)
     - `batch_size_kg` (float): Batch size in kg (only for use_advanced=True)
+    - `pharma_mode` (bool): Enforce pharma-grade ≥99% yield requirement (Phase 5)
     
     **Returns:**
     - Basic mode: Multiple routes from Claude ranked by yield, cost, and complexity
     - Advanced mode: 5 optimized routes with full ML predictions, scale optimization, and industrial cost analysis
+    - Pharma mode: Only routes with ≥99% yield, optimized for cost via multi-step routes
     """
     global orchestrator
     
