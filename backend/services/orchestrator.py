@@ -49,6 +49,13 @@ class SynthesisPlanningOrchestrator:
         self.condition_predictor = ConditionPredictor()
         self.route_scorer = EnhancedRouteScorer()
         
+        # Phase 5: Process constraints engine
+        try:
+            self.constraints_engine = ProcessConstraintsEngine()
+        except Exception as e:
+            logger.warning(f"ProcessConstraintsEngine init failed: {e}, using fallback")
+            self.constraints_engine = None
+        
         # Load ML models
         self.yield_predictor.load_model()
         self.condition_predictor.load_models()
@@ -180,10 +187,13 @@ class SynthesisPlanningOrchestrator:
                 # Sub-step 3d: Scale optimization
                 route_dict = self._optimize_for_scale(route_dict, scale, batch_size_kg)
                 
-                # Sub-step 3e: Calculate industrial costs (with hybrid caching)
+                # Phase 5: Sub-step 3e: Evaluate process constraints
+                route_dict = self._evaluate_process_constraints(route_dict, scale, batch_size_kg)
+                
+                # Sub-step 3f: Calculate industrial costs (with hybrid caching)
                 route_dict = self._calculate_industrial_costs(route_dict, scale, batch_size_kg)
                 
-                # Sub-step 3f: Calculate composite score
+                # Sub-step 3g: Calculate composite score (includes constraint penalties)
                 route_dict['score'] = self._calculate_composite_score(
                     route_dict, 
                     request.optimize_for
@@ -371,6 +381,89 @@ class SynthesisPlanningOrchestrator:
             'equipment_cost': 0.0,
             'waste_disposal_cost': 0.0
         }
+
+    def _evaluate_process_constraints(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
+        """
+        Phase 5: Evaluate physical realism and process constraints for each step.
+        
+        Analyzes thermal, mixing, mass transfer, safety, and purification constraints.
+        """
+        total_constraint_penalty = 0.0
+        route_recommendations = []
+        route_equipment_requirements = []
+        
+        for step in route['steps']:
+            try:
+                # Build reaction dict for constraint evaluation
+                reaction_dict = {
+                    'reactants': step.get('reactants', []),
+                    'products': [step.get('product', '')],
+                    'reaction_type': step.get('reaction_type', 'unknown'),
+                    'temperature_c': step.get('predicted_conditions', {}).get('temperature_celsius', 25.0),
+                    'time_hours': step.get('predicted_time_hours', 4.0),
+                    'catalyst': step.get('predicted_conditions', {}).get('catalyst', ''),
+                    'solvent': step.get('predicted_conditions', {}).get('solvent', 'THF'),
+                    'pressure_atm': step.get('pressure_atm', 1.0),
+                    'yield_percent': step.get('scale_adjusted_yield', 75.0),
+                    'phase_type': step.get('phase_type', 'single')
+                }
+                
+                # Evaluate constraints
+                constraints = self.constraints_engine.evaluate_reaction_constraints(
+                    reaction_dict, scale, batch_size_kg / route['num_steps']
+                )
+                
+                # Store constraint data in step
+                step['process_constraints'] = {
+                    'heat_risk': constraints.heat_risk,
+                    'mixing_efficiency': constraints.mixing_efficiency,
+                    'mass_transfer': constraints.mass_transfer,
+                    'safety_risk': constraints.safety_risk,
+                    'purification_difficulty': constraints.purification_difficulty,
+                    'total_penalty': constraints.total_penalty,
+                    'recommendations': constraints.recommendations,
+                    'equipment_requirements': constraints.equipment_requirements
+                }
+                
+                # Accumulate penalties and recommendations
+                total_constraint_penalty += constraints.total_penalty
+                route_recommendations.extend(constraints.recommendations[:3])  # Top 3 per step
+                route_equipment_requirements.extend(constraints.equipment_requirements)
+                
+                # Adjust yield if safety/heat risk is critical
+                if constraints.safety_risk == 'critical' or constraints.heat_risk == 'critical':
+                    step['scale_adjusted_yield'] *= 0.95  # 5% yield reduction for critical risks
+                    logger.warning(f"Critical constraint detected - yield adjusted for step {step.get('reaction_type')}")
+                
+            except Exception as e:
+                logger.error(f"constraint_evaluation_failed: {str(e)}")
+                step['process_constraints'] = {'total_penalty': 0, 'recommendations': []}
+        
+        # Store route-level constraint data
+        route['total_constraint_penalty'] = total_constraint_penalty / max(route['num_steps'], 1)
+        route['constraint_recommendations'] = list(set(route_recommendations))[:10]  # Unique, top 10
+        route['equipment_requirements'] = list(set(route_equipment_requirements))
+        
+        # Recalculate overall yield after constraint adjustments
+        overall_yield = 100.0
+        for step in route['steps']:
+            overall_yield *= (step['scale_adjusted_yield'] / 100.0)
+        route['scale_adjusted_overall_yield'] = round(overall_yield, 2)
+        
+        logger.info(f"constraint_evaluation_complete: penalty={total_constraint_penalty:.1f}, recommendations={len(route['constraint_recommendations'])}")
+        
+        return route
+    
+    def _calculate_industrial_costs(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
+        """Calculate industrial costs with hybrid caching."""
+        total_cost = 0.0
+        cost_breakdown = {
+            'reagent_cost': 0.0,
+            'energy_cost': 0.0,
+            'labor_cost': 0.0,
+            'equipment_cost': 0.0,
+            'waste_disposal_cost': 0.0
+        }
         
         for step in route['steps']:
             try:
@@ -421,7 +514,9 @@ class SynthesisPlanningOrchestrator:
         return route
     
     def _calculate_composite_score(self, route: Dict, optimize_for: str) -> float:
-        """Calculate composite score based on yield, cost, time, and steps."""
+        """
+        Calculate composite score based on yield, cost, time, steps, and constraints (Phase 5).
+        """
         
         # Normalize metrics (0-100 scale)
         yield_score = route.get('scale_adjusted_overall_yield', 75.0)
@@ -438,21 +533,26 @@ class SynthesisPlanningOrchestrator:
         steps = route.get('num_steps', 3)
         step_score = max(0, 100 - (steps * 10))
         
-        # Weights based on optimization goal
+        # Phase 5: Constraint penalty (higher penalty = lower score)
+        constraint_penalty = route.get('total_constraint_penalty', 0.0)
+        constraint_score = max(0, 100 - constraint_penalty)  # Direct penalty reduction
+        
+        # Weights based on optimization goal (Phase 5: added 10% for constraints)
         if optimize_for == 'yield':
-            weights = {'yield': 0.6, 'cost': 0.1, 'time': 0.1, 'steps': 0.2}
+            weights = {'yield': 0.55, 'cost': 0.10, 'time': 0.05, 'steps': 0.15, 'constraints': 0.15}
         elif optimize_for == 'cost':
-            weights = {'yield': 0.2, 'cost': 0.5, 'time': 0.1, 'steps': 0.2}
+            weights = {'yield': 0.20, 'cost': 0.45, 'time': 0.05, 'steps': 0.15, 'constraints': 0.15}
         elif optimize_for == 'time':
-            weights = {'yield': 0.2, 'cost': 0.1, 'time': 0.5, 'steps': 0.2}
+            weights = {'yield': 0.20, 'cost': 0.10, 'time': 0.45, 'steps': 0.10, 'constraints': 0.15}
         else:  # balanced
-            weights = {'yield': 0.35, 'cost': 0.30, 'time': 0.15, 'steps': 0.20}
+            weights = {'yield': 0.30, 'cost': 0.25, 'time': 0.15, 'steps': 0.15, 'constraints': 0.15}
         
         composite_score = (
             weights['yield'] * yield_score +
             weights['cost'] * cost_score +
             weights['time'] * time_score +
-            weights['steps'] * step_score
+            weights['steps'] * step_score +
+            weights['constraints'] * constraint_score  # Phase 5: added
         )
         
         return round(composite_score, 2)

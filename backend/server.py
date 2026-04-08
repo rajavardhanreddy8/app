@@ -492,6 +492,60 @@ class IndustrialCostRequest(BaseModel):
     batch_size_kg: float = 0.1
     include_recovery: bool = False
 
+
+
+# ============ PHASE 5: PROCESS CONSTRAINTS ENDPOINT ============
+
+class ProcessConstraintsRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+
+@api_router.post("/constraints/evaluate")
+async def evaluate_process_constraints(request: ProcessConstraintsRequest):
+    """
+    Evaluate physical realism and process constraints for a reaction.
+    
+    Returns thermal, mixing, mass transfer, safety, and purification analysis
+    with actionable recommendations.
+    """
+    try:
+        from services.process_constraints_engine import ProcessConstraintsEngine
+        
+        engine = ProcessConstraintsEngine()
+        
+        constraints = engine.evaluate_reaction_constraints(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'scale': request.scale,
+            'batch_size_kg': request.batch_size_kg,
+            'constraints': {
+                'heat_risk': constraints.heat_risk,
+                'heat_score': constraints.heat_score,
+                'mixing_efficiency': constraints.mixing_efficiency,
+                'mixing_score': constraints.mixing_score,
+                'mass_transfer': constraints.mass_transfer,
+                'mass_transfer_score': constraints.mass_transfer_score,
+                'safety_risk': constraints.safety_risk,
+                'safety_score': constraints.safety_score,
+                'purification_difficulty': constraints.purification_difficulty,
+                'purification_score': constraints.purification_score,
+                'phase_complexity': constraints.phase_complexity,
+                'total_penalty': constraints.total_penalty
+            },
+            'recommendations': constraints.recommendations,
+            'equipment_requirements': constraints.equipment_requirements
+        }
+        
+    except Exception as e:
+        logging.error(f"Process constraints evaluation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.post("/cost/industrial")
 async def calculate_industrial_cost(request: IndustrialCostRequest):
     """
