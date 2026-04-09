@@ -11,6 +11,7 @@ import RetrosynthesisPage from "@/pages/RetrosynthesisPage";
 import ScaleUpPage from "@/pages/ScaleUpPage";
 import ConditionPredictorPage from "@/pages/ConditionPredictorPage";
 import EquipmentPage from "@/pages/EquipmentPage";
+import RouteOptimizerPage from "@/pages/RouteOptimizerPage";
 
 function App() {
   return (
@@ -25,6 +26,7 @@ function App() {
           <Route path="/scale-up" element={<ScaleUpPage />} />
           <Route path="/conditions" element={<ConditionPredictorPage />} />
           <Route path="/equipment" element={<EquipmentPage />} />
+          <Route path="/optimizer" element={<RouteOptimizerPage />} />
           <Route path="/history" element={<HistoryPage />} />
         </Routes>
       </Layout>

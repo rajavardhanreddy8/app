@@ -18,6 +18,7 @@ import {
   Database,
   Cpu,
   FlaskConical,
+  Zap,
 } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -80,6 +81,13 @@ const DashboardPage = () => {
       icon: MessageSquare,
       link: "/copilot",
       color: "from-orange-500 to-amber-500",
+    },
+    {
+      title: "Route Optimizer",
+      desc: "Mutation, confidence & equipment check",
+      icon: Zap,
+      link: "/optimizer",
+      color: "from-yellow-500 to-lime-500",
     },
     {
       title: "Scale-Up & Cost",

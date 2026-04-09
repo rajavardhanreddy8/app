@@ -116,6 +116,10 @@ class MCTSSearch:
         self.best_score = float('-inf')
         self.iteration_count = 0
         
+        # Performance tuning: caching
+        self._evaluation_cache = {}
+        self._pruning_cache = {}
+        
         logger.info(f"MCTS initialized: pharma_mode={pharma_mode}")
     
     def search(
@@ -136,9 +140,16 @@ class MCTSSearch:
             List of synthesis routes (best first)
         """
         if max_iterations:
-            self.max_iterations = max_iterations
+            self.max_iterations = max(100, min(1000, max_iterations))
         if max_depth:
-            self.max_depth = max_depth
+            self.max_depth = max(2, min(12, max_depth))
+        
+        # Reset caches and state for new search
+        self._evaluation_cache = {}
+        self._pruning_cache = {}
+        self.best_route = None
+        self.best_score = float('-inf')
+        self.iteration_count = 0
         
         logger.info(
             f"mcts_search_start: target={target_molecule[:20]}..., "
@@ -279,6 +290,7 @@ class MCTSSearch:
     def _should_prune(self, node: MCTSNode) -> bool:
         """
         Apply pruning rules to avoid exploring bad branches.
+        Uses caching for constraint checks.
         
         Args:
             node: Node to check
@@ -289,45 +301,54 @@ class MCTSSearch:
         if not node.reaction_used:
             return False
         
+        # Check pruning cache
+        cache_key = tuple(node.path_from_root)
+        if cache_key in self._pruning_cache:
+            return self._pruning_cache[cache_key]
+        
         rxn = node.reaction_used
+        result = False
         
         # Pruning Rule 1: Pharma mode yield enforcement
         if self.pharma_mode:
             yield_pct = rxn.get('yield_percent', 75.0)
             if yield_pct < self.min_yield_pharma:
                 node.pruning_reason = f"pharma_yield_{yield_pct:.1f}%<{self.min_yield_pharma}%"
-                return True
+                result = True
         
         # Pruning Rule 2: Normal mode minimum yield
-        else:
+        if not result and not self.pharma_mode:
             yield_pct = rxn.get('yield_percent', 75.0)
             if yield_pct < self.min_yield_normal:
                 node.pruning_reason = f"low_yield_{yield_pct:.1f}%"
-                return True
+                result = True
         
         # Pruning Rule 3: High cost
-        cost = rxn.get('cost', 100.0)
-        if cost > self.max_cost_per_step:
-            node.pruning_reason = f"high_cost_${cost:.0f}"
-            return True
+        if not result:
+            cost = rxn.get('cost', 100.0)
+            if cost > self.max_cost_per_step:
+                node.pruning_reason = f"high_cost_${cost:.0f}"
+                result = True
         
         # Pruning Rule 4: Constraint penalties (if engine available)
-        if self.constraints_engine:
+        if not result and self.constraints_engine:
             try:
                 constraints = self.constraints_engine.evaluate_reaction_constraints(
                     rxn, scale='lab', batch_size_kg=0.1
                 )
                 if constraints.total_penalty > self.max_constraint_penalty:
                     node.pruning_reason = f"high_constraints_{constraints.total_penalty:.0f}"
-                    return True
+                    result = True
             except Exception as e:
                 logger.debug(f"constraint_check_failed: {str(e)}")
         
-        return False
+        self._pruning_cache[cache_key] = result
+        return result
     
     def _evaluate(self, node: MCTSNode) -> float:
         """
         Evaluation phase: Score the route from root to this node.
+        Uses caching to avoid redundant calculations.
         
         Args:
             node: Node to evaluate
@@ -335,17 +356,24 @@ class MCTSSearch:
         Returns:
             Reward score (0-100)
         """
+        # Cache key based on molecule path
+        cache_key = tuple(node.path_from_root)
+        if cache_key in self._evaluation_cache:
+            return self._evaluation_cache[cache_key]
+        
         # If not terminal, do a simple heuristic rollout
         if not node.is_terminal:
-            # Estimate based on current path quality
-            return self._heuristic_evaluation(node)
+            score = self._heuristic_evaluation(node)
+        elif node.is_commercial:
+            # If terminal and commercial, this is a complete route
+            score = self._score_complete_route(node)
+        else:
+            # Terminal but not commercial = dead end
+            score = 0.0
         
-        # If terminal and commercial, this is a complete route
-        if node.is_commercial:
-            return self._score_complete_route(node)
-        
-        # Terminal but not commercial = dead end
-        return 0.0
+        # Cache result
+        self._evaluation_cache[cache_key] = score
+        return score
     
     def _heuristic_evaluation(self, node: MCTSNode) -> float:
         """Quick heuristic evaluation for non-terminal nodes."""

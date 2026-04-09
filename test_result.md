@@ -274,6 +274,81 @@ backend:
         agent: "testing"
         comment: "Comprehensive testing completed. History endpoint returns empty array (0 items) as expected for fresh database. API structure and MongoDB connection working perfectly."
 
+  - task: "Route Mutation API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Catalyst swap (H2SO4→Amberlyst-15), solvent optimization (DCM→CPME), temperature tuning. Tested via curl."
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive testing completed. Route mutation API working perfectly. Tested with esterification route: 2 mutations applied (catalyst_swap_step_0, solvent_optimization_step_0). Catalyst-only mutation test also passed with 1 mutation applied. All mutation types (catalyst_swap, solvent_optimization, temperature_tune, all) working correctly."
+
+  - task: "Constraint Feedback API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Auto-fixes: heat_risk→reduce temp, mixing_issue→change solvent, safety→reduce batch. ProcessConstraintsEngine active."
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive testing completed. Constraint feedback API working perfectly. Tested with high-temperature esterification (200°C): original_constraints, applied_fixes, and improved_constraints all returned correctly. Constraint evaluation system functioning properly with heat_risk, mixing, and safety fields."
+
+  - task: "Confidence Score API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Returns overall_confidence, yield/cost/safety/equipment breakdown, risk_level, risk_factors. Tested: 84.2% low risk."
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive testing completed. Confidence scoring API working perfectly. Tested with esterification route: 84.2% overall confidence, low risk level, 0 risk factors. All required fields present: overall_confidence, risk_level, yield_confidence, cost_confidence, safety_confidence, equipment_feasibility, risk_factors. Confidence values properly validated (0-100 range)."
+
+  - task: "Equipment Feasibility API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Hard constraints check. Rejects if temp>300 or pressure>100atm. Equipment recommendations per step. Tested with hydrogenation route."
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive testing completed. Equipment feasibility API working perfectly. Tested feasible case (esterification + hydrogenation): feasible=True, 2 step equipment, 1 recommendation. Hard constraints test with extreme conditions (400°C, 200atm): feasible=False, 2 violations, 2 issues. Hard constraint detection working correctly."
+
+  - task: "Full Route Optimization API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Pipeline: mutations + constraints + confidence + equipment. Tested with 2-step esterification+suzuki. 4 mutations, 77.3% confidence, equipment feasible."
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive testing completed. Full route optimization API working perfectly. Tested with 2-step route (esterification + suzuki_coupling): all 5 optimization sections completed (mutations, confidence, constraint_feedback, equipment, optimized_route). 4 mutations applied, 77.3% overall confidence, equipment feasible=True. Complete optimization pipeline functioning correctly."
+
 frontend:
   - task: "Sidebar Navigation & Layout"
     implemented: true
@@ -432,8 +507,7 @@ metadata:
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "All frontend pages"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -466,3 +540,17 @@ agent_communication:
       All API integrations returning correct data. No console errors found.
       Only minor CDN-related network failures (cdn-cgi/rum) which don't affect functionality.
       Application is production-ready and fully functional.
+  - agent: "testing"
+    message: |
+      Phase 6 Optimization Layer Testing Complete: All 5 NEW endpoints PASSED comprehensive testing.
+      Updated backend_test.py with 7 new test cases covering all Phase 6 optimization features.
+      Tested endpoints: /routes/mutate, /routes/constraint-feedback, /routes/confidence, 
+      /routes/equipment-check, /routes/optimize with realistic chemical data.
+      All optimization features working perfectly:
+      - Route mutations: catalyst swap, solvent optimization (2 mutations applied)
+      - Constraint feedback: heat_risk, mixing, safety evaluation with auto-fixes
+      - Confidence scoring: 84.2% confidence with risk assessment (low risk, 0 factors)
+      - Equipment feasibility: proper hard constraint detection (feasible/infeasible cases)
+      - Full optimization pipeline: 5/5 sections completed (mutations, confidence, constraints, equipment)
+      Verified existing endpoints still working: molecule validation (valid:true), template stats (8 types).
+      All 20 backend tests PASSED. Phase 6 optimization layer is production-ready.

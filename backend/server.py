@@ -19,6 +19,8 @@ from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
 from services.template_extractor import TemplateExtractor
 from services.equipment_recommender import EquipmentRecommender
+from services.route_optimizer import RouteOptimizer
+from services.process_constraints_engine import ProcessConstraintsEngine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -36,6 +38,10 @@ condition_predictor = ConditionPredictor()
 route_scorer = EnhancedRouteScorer()
 template_extractor = TemplateExtractor()
 equipment_recommender = EquipmentRecommender()
+
+# Phase 6 Optimization Layer
+constraints_engine = ProcessConstraintsEngine()
+route_optimizer = None  # Will be initialized in startup
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -111,7 +117,7 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 @app.on_event("startup")
 async def startup_event():
     """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
-    global orchestrator
+    global orchestrator, route_optimizer
     
     if orchestrator:
         try:
@@ -119,6 +125,17 @@ async def startup_event():
             logging.info("✓ Chemical graph initialized from MongoDB")
         except Exception as e:
             logging.error(f"✗ Chemical graph init failed: {str(e)}")
+    
+    # Initialize route optimizer with constraints engine and equipment recommender
+    try:
+        route_optimizer = RouteOptimizer(
+            constraints_engine=constraints_engine,
+            equipment_recommender=equipment_recommender
+        )
+        logging.info("✓ Route optimizer initialized")
+    except Exception as e:
+        logging.error(f"✗ Route optimizer init failed: {str(e)}")
+        route_optimizer = RouteOptimizer()
 
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
@@ -602,6 +619,231 @@ async def calculate_industrial_cost(request: IndustrialCostRequest):
         
     except Exception as e:
         logging.error(f"Industrial cost calculation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ PHASE 6 OPTIMIZATION LAYER ENDPOINTS ============
+
+class RouteMutationRequest(BaseModel):
+    route: Dict[str, Any]
+    mutation_types: Optional[List[str]] = None  # ["catalyst_swap", "solvent_optimization", "temperature_tune", "all"]
+
+class ConstraintFeedbackRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+
+class ConfidenceScoreRequest(BaseModel):
+    route: Dict[str, Any]
+    mcts_visits: int = 0
+
+class EquipmentFeasibilityRequest(BaseModel):
+    route: Dict[str, Any]
+
+class FullOptimizationRequest(BaseModel):
+    route: Dict[str, Any]
+    apply_mutations: bool = True
+    check_constraints: bool = True
+    calculate_confidence: bool = True
+    check_equipment: bool = True
+    mutation_types: Optional[List[str]] = None
+
+
+@api_router.post("/routes/mutate")
+async def mutate_route(request: RouteMutationRequest):
+    """
+    Apply route mutations: catalyst swapping, solvent optimization, temperature tuning.
+    
+    Returns the mutated route with improvement tracking.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        mutated = route_optimizer.mutate_route(
+            route=request.route,
+            mutation_types=request.mutation_types
+        )
+        
+        return {
+            'status': 'success',
+            'original_route': request.route,
+            'mutated_route': mutated,
+            'mutations_applied': mutated.get('mutations_applied', []),
+            'mutation_count': mutated.get('mutation_count', 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Route mutation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/constraint-feedback")
+async def constraint_feedback(request: ConstraintFeedbackRequest):
+    """
+    Evaluate constraints and auto-fix issues.
+    
+    If heat_risk=high → reduce temperature
+    If mixing_issue → change solvent
+    If safety_risk=high → reduce batch size
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        feedback = route_optimizer.apply_constraint_feedback(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'original_constraints': feedback.original_constraints,
+            'applied_fixes': feedback.applied_fixes,
+            'improved_constraints': feedback.improved_constraints,
+            'improvement_summary': feedback.improvement_summary,
+            'num_fixes': len(feedback.applied_fixes)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Constraint feedback failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/confidence")
+async def calculate_confidence(request: ConfidenceScoreRequest):
+    """
+    Calculate route confidence/reliability score with risk assessment.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        confidence = route_optimizer.calculate_confidence(
+            route=request.route,
+            mcts_visits=request.mcts_visits
+        )
+        
+        return {
+            'status': 'success',
+            'overall_confidence': confidence.overall_confidence,
+            'yield_confidence': confidence.yield_confidence,
+            'cost_confidence': confidence.cost_confidence,
+            'safety_confidence': confidence.safety_confidence,
+            'equipment_feasibility': confidence.equipment_feasibility,
+            'risk_level': confidence.risk_level,
+            'risk_factors': confidence.risk_factors,
+            'reliability_breakdown': confidence.reliability_breakdown
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Confidence calculation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/equipment-check")
+async def check_equipment(request: EquipmentFeasibilityRequest):
+    """
+    Check if route steps can be executed with available equipment.
+    Hard constraints: reject if equipment unavailable.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        feasibility = route_optimizer.check_equipment_feasibility(
+            route=request.route
+        )
+        
+        return {
+            'status': 'success',
+            **feasibility
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Equipment check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/optimize")
+async def full_route_optimization(request: FullOptimizationRequest):
+    """
+    Full optimization pipeline: mutations + constraint feedback + confidence + equipment check.
+    
+    Runs the complete optimization layer on a route.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        result = {
+            'status': 'success',
+            'original_route': request.route,
+        }
+        
+        current_route = request.route
+        
+        # 1. Apply mutations
+        if request.apply_mutations:
+            mutated = route_optimizer.mutate_route(current_route, request.mutation_types)
+            result['mutations'] = {
+                'applied': mutated.get('mutations_applied', []),
+                'count': mutated.get('mutation_count', 0)
+            }
+            current_route = mutated
+        
+        # 2. Constraint feedback
+        if request.check_constraints:
+            steps = current_route.get('steps', [])
+            if steps and isinstance(steps[0], dict):
+                reaction = steps[0].get('conditions', steps[0])
+            else:
+                reaction = current_route
+            
+            feedback = route_optimizer.apply_constraint_feedback(reaction)
+            result['constraint_feedback'] = {
+                'original': feedback.original_constraints,
+                'fixes': feedback.applied_fixes,
+                'improved': feedback.improved_constraints,
+                'summary': feedback.improvement_summary
+            }
+        
+        # 3. Confidence scoring
+        if request.calculate_confidence:
+            confidence = route_optimizer.calculate_confidence(current_route)
+            result['confidence'] = {
+                'overall': confidence.overall_confidence,
+                'risk_level': confidence.risk_level,
+                'risk_factors': confidence.risk_factors,
+                'breakdown': {
+                    'yield': confidence.yield_confidence,
+                    'cost': confidence.cost_confidence,
+                    'safety': confidence.safety_confidence,
+                    'equipment': confidence.equipment_feasibility
+                }
+            }
+        
+        # 4. Equipment binding
+        if request.check_equipment:
+            feasibility = route_optimizer.check_equipment_feasibility(current_route)
+            result['equipment'] = feasibility
+        
+        result['optimized_route'] = current_route
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Full optimization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app
