@@ -22,6 +22,7 @@ from services.equipment_recommender import EquipmentRecommender
 from services.route_optimizer import RouteOptimizer
 from services.process_constraints_engine import ProcessConstraintsEngine
 from services.convergence_engine import ConvergenceEngine
+from services.yield_optimization_engine import YieldOptimizationEngine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -44,6 +45,7 @@ equipment_recommender = EquipmentRecommender()
 constraints_engine = ProcessConstraintsEngine()
 route_optimizer = None  # Will be initialized in startup
 convergence_engine = None  # Phase 7 convergence engine
+yield_engine = None  # Phase 8 yield optimization engine
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -119,7 +121,7 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 @app.on_event("startup")
 async def startup_event():
     """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
-    global orchestrator, route_optimizer, convergence_engine
+    global orchestrator, route_optimizer, convergence_engine, yield_engine
     
     if orchestrator:
         try:
@@ -138,11 +140,15 @@ async def startup_event():
             route_optimizer=route_optimizer,
             constraints_engine=constraints_engine
         )
-        logging.info("✓ Route optimizer + convergence engine initialized")
+        yield_engine = YieldOptimizationEngine(
+            constraints_engine=constraints_engine
+        )
+        logging.info("✓ Route optimizer + convergence + yield engine initialized")
     except Exception as e:
         logging.error(f"✗ Route optimizer init failed: {str(e)}")
         route_optimizer = RouteOptimizer()
         convergence_engine = ConvergenceEngine(route_optimizer=route_optimizer)
+        yield_engine = YieldOptimizationEngine()
 
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
@@ -664,6 +670,13 @@ class IterativeOptimizationRequest(BaseModel):
     pharma_mode: bool = False
 
 
+class YieldOptimizationRequest(BaseModel):
+    route: Dict[str, Any]
+    pharma_mode: bool = False
+    max_iterations: int = 5
+    target_yield: float = 0.99
+
+
 @api_router.post("/routes/mutate")
 async def mutate_route(request: RouteMutationRequest):
     """
@@ -908,6 +921,67 @@ async def iterative_optimization(request: IterativeOptimizationRequest):
         raise
     except Exception as e:
         logging.error(f"Iterative optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/yield-optimize")
+async def yield_optimization(request: YieldOptimizationRequest):
+    """
+    Phase 8: Yield Optimization Engine.
+    
+    Engineers yield to target (default 99%), doesn't just predict it.
+    
+    Features:
+    - Iterative yield-driven mutation loop
+    - Multi-step yield collapse fix (Y = y1 × y2 × y3)
+    - Loss-based cost (low yield = expensive)
+    - Yield-dominant scoring (yield^5 - cost - penalty)
+    - Pharma mode hard constraint (reject <99%)
+    """
+    try:
+        if not yield_engine:
+            raise HTTPException(status_code=503, detail="Yield optimization engine not initialized")
+        
+        result = yield_engine.optimize_for_yield(
+            route=request.route,
+            pharma_mode=request.pharma_mode,
+            max_iterations=request.max_iterations,
+            target_yield=request.target_yield,
+        )
+        
+        return {
+            'status': result.status,
+            'target_yield': result.target_yield,
+            'initial_yield': result.initial_yield,
+            'final_yield': result.final_yield,
+            'yield_improvement': result.yield_improvement,
+            'yield_improvement_pct': round(result.yield_improvement * 100, 2),
+            'iterations_used': result.iterations_used,
+            'step_yields': result.step_yields,
+            'yield_bottleneck_step': result.yield_bottleneck_step,
+            'cost_analysis': {
+                'initial_cost': result.initial_cost,
+                'final_cost': result.final_cost,
+                'loss_cost_initial': result.loss_cost_initial,
+                'loss_cost_final': result.loss_cost_final,
+                'cost_saving_from_yield': result.cost_saving_from_yield,
+            },
+            'scoring': {
+                'initial_score': result.initial_score,
+                'final_score': result.final_score,
+                'score_formula': 'yield^5 × 100 - cost_penalty - constraint_penalty',
+            },
+            'optimization_history': result.optimization_history,
+            'optimized_route': result.optimized_route,
+            'pharma_mode': result.pharma_mode,
+            'pharma_compliant': result.pharma_compliant,
+            'duration_ms': result.duration_ms,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Yield optimization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

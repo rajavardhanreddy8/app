@@ -323,6 +323,14 @@ class MCTSSearch:
                 node.pruning_reason = f"low_yield_{yield_pct:.1f}%"
                 result = True
         
+        # Pruning Rule 2b: Yield-based expansion control
+        # Aggressively prune low-yield branches to focus search on high-yield routes
+        if not result:
+            yield_pct = rxn.get('yield_percent', 75.0)
+            if yield_pct < 70.0 and node.depth > 2:
+                node.pruning_reason = f"yield_too_low_at_depth_{node.depth}_{yield_pct:.1f}%"
+                result = True
+        
         # Pruning Rule 3: High cost
         if not result:
             cost = rxn.get('cost', 100.0)

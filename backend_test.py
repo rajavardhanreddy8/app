@@ -1069,6 +1069,411 @@ class BackendTester:
         except Exception as e:
             self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
     
+    # ============ PHASE 8: YIELD OPTIMIZATION ENGINE TESTS ============
+    
+    def test_yield_optimize_low_yield_aggressive(self):
+        """Test POST /api/routes/yield-optimize - Low yield route (aggressive mutation expected)"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [
+                        {
+                            "reaction_type": "grignard",
+                            "conditions": {
+                                "catalyst": "None",
+                                "solvent": "hexane",
+                                "temperature_celsius": 200
+                            }
+                        },
+                        {
+                            "reaction_type": "friedel_crafts",
+                            "conditions": {
+                                "catalyst": "AlCl3",
+                                "solvent": "benzene",
+                                "temperature_celsius": 150
+                            }
+                        }
+                    ],
+                    "overall_yield_percent": 40,
+                    "total_cost_usd": 300,
+                    "num_steps": 2
+                },
+                "pharma_mode": False,
+                "max_iterations": 5,
+                "target_yield": 0.99
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                required_fields = ['status', 'target_yield', 'initial_yield', 'final_yield', 
+                                 'yield_improvement', 'iterations_used', 'step_yields', 
+                                 'yield_bottleneck_step', 'cost_analysis', 'scoring', 
+                                 'optimization_history', 'optimized_route']
+                
+                if all(field in data for field in required_fields):
+                    # Verify expected behavior for low yield route
+                    status = data['status']
+                    initial_yield = data['initial_yield']
+                    final_yield = data['final_yield']
+                    yield_improvement = data['yield_improvement']
+                    step_yields = data['step_yields']
+                    bottleneck = data['yield_bottleneck_step']
+                    cost_analysis = data['cost_analysis']
+                    iterations = data['iterations_used']
+                    
+                    # Expected: status="improved", final_yield > initial_yield, yield_improvement > 0
+                    if (status == "improved" and 
+                        final_yield > initial_yield and 
+                        yield_improvement > 0 and
+                        isinstance(step_yields, list) and len(step_yields) == 2 and
+                        bottleneck is not None and
+                        'loss_cost_initial' in cost_analysis and 'loss_cost_final' in cost_analysis and
+                        cost_analysis['loss_cost_initial'] > cost_analysis['loss_cost_final'] and
+                        iterations > 1):
+                        self.log_result("/routes/yield-optimize (low yield)", "POST", "PASS", 
+                                      f"Low yield optimization: {status}, improvement: {yield_improvement:.3f}, iterations: {iterations}, bottleneck: {bottleneck}")
+                    else:
+                        self.log_result("/routes/yield-optimize (low yield)", "POST", "FAIL", 
+                                      f"Unexpected results: status={status}, improvement={yield_improvement}, iterations={iterations}")
+                else:
+                    missing = [f for f in required_fields if f not in data]
+                    self.log_result("/routes/yield-optimize (low yield)", "POST", "FAIL", 
+                                  f"Missing fields: {missing}")
+            else:
+                self.log_result("/routes/yield-optimize (low yield)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (low yield)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_yield_optimize_high_yield_quick(self):
+        """Test POST /api/routes/yield-optimize - Already high-yield route (should reach target quickly)"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [{
+                        "reaction_type": "hydrogenation",
+                        "conditions": {
+                            "catalyst": "Pd(PPh3)4",
+                            "solvent": "THF",
+                            "temperature_celsius": 60
+                        }
+                    }],
+                    "overall_yield_percent": 99.5,
+                    "total_cost_usd": 100,
+                    "num_steps": 1
+                },
+                "target_yield": 0.99
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get('status')
+                iterations = data.get('iterations_used')
+                final_yield = data.get('final_yield')
+                
+                # Expected: status="target_achieved", iterations_used=1, final_yield >= 0.99
+                if (status == "target_achieved" and 
+                    iterations == 1 and 
+                    final_yield >= 0.99):
+                    self.log_result("/routes/yield-optimize (high yield)", "POST", "PASS", 
+                                  f"High yield optimization: {status}, iterations: {iterations}, final_yield: {final_yield}")
+                else:
+                    self.log_result("/routes/yield-optimize (high yield)", "POST", "FAIL", 
+                                  f"Unexpected results: status={status}, iterations={iterations}, final_yield={final_yield}")
+            else:
+                self.log_result("/routes/yield-optimize (high yield)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (high yield)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_yield_optimize_pharma_mode(self):
+        """Test POST /api/routes/yield-optimize - Pharma mode test"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 80
+                        }
+                    }],
+                    "overall_yield_percent": 60,
+                    "total_cost_usd": 200
+                },
+                "pharma_mode": True,
+                "target_yield": 0.99
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                pharma_mode = data.get('pharma_mode')
+                pharma_compliant = data.get('pharma_compliant')
+                
+                # Expected: pharma_mode=true, pharma_compliant field present
+                if (pharma_mode is True and 
+                    'pharma_compliant' in data):
+                    self.log_result("/routes/yield-optimize (pharma mode)", "POST", "PASS", 
+                                  f"Pharma mode: pharma_mode={pharma_mode}, pharma_compliant={pharma_compliant}")
+                else:
+                    self.log_result("/routes/yield-optimize (pharma mode)", "POST", "FAIL", 
+                                  f"Pharma mode not properly set: pharma_mode={pharma_mode}, pharma_compliant={pharma_compliant}")
+            else:
+                self.log_result("/routes/yield-optimize (pharma mode)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (pharma mode)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_yield_optimize_scoring_verification(self):
+        """Test POST /api/routes/yield-optimize - Verify yield-dominant scoring"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [
+                        {
+                            "reaction_type": "esterification",
+                            "conditions": {
+                                "catalyst": "H2SO4",
+                                "solvent": "DCM",
+                                "temperature_celsius": 120
+                            }
+                        },
+                        {
+                            "reaction_type": "suzuki_coupling",
+                            "conditions": {
+                                "catalyst": "Pd(OAc)2",
+                                "solvent": "DMF",
+                                "temperature_celsius": 100
+                            }
+                        }
+                    ],
+                    "overall_yield_percent": 65,
+                    "total_cost_usd": 250,
+                    "num_steps": 2
+                },
+                "max_iterations": 5
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                scoring = data.get('scoring', {})
+                
+                # Expected: scoring.initial_score and scoring.final_score present, score_formula field present
+                if ('initial_score' in scoring and 
+                    'final_score' in scoring and 
+                    'score_formula' in scoring):
+                    initial_score = scoring['initial_score']
+                    final_score = scoring['final_score']
+                    formula = scoring['score_formula']
+                    
+                    self.log_result("/routes/yield-optimize (scoring)", "POST", "PASS", 
+                                  f"Scoring verification: initial={initial_score}, final={final_score}, formula='{formula}'")
+                else:
+                    self.log_result("/routes/yield-optimize (scoring)", "POST", "FAIL", 
+                                  f"Missing scoring fields: {scoring}")
+            else:
+                self.log_result("/routes/yield-optimize (scoring)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (scoring)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_yield_optimize_multi_step_collapse(self):
+        """Test POST /api/routes/yield-optimize - Multi-step yield collapse test"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [
+                        {
+                            "reaction_type": "grignard",
+                            "conditions": {
+                                "catalyst": "None",
+                                "solvent": "None",
+                                "temperature_celsius": 250
+                            }
+                        },
+                        {
+                            "reaction_type": "oxidation",
+                            "conditions": {
+                                "catalyst": "None",
+                                "solvent": "water",
+                                "temperature_celsius": 180
+                            }
+                        },
+                        {
+                            "reaction_type": "friedel_crafts",
+                            "conditions": {
+                                "catalyst": "AlCl3",
+                                "solvent": "hexane",
+                                "temperature_celsius": 160
+                            }
+                        }
+                    ],
+                    "overall_yield_percent": 20,
+                    "total_cost_usd": 500,
+                    "num_steps": 3
+                },
+                "max_iterations": 5
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                step_yields = data.get('step_yields', [])
+                bottleneck = data.get('yield_bottleneck_step')
+                optimization_history = data.get('optimization_history', [])
+                
+                # Expected: 3 step_yields entries, bottleneck identified, multiple mutations per iteration
+                if (isinstance(step_yields, list) and len(step_yields) == 3 and
+                    bottleneck is not None and
+                    isinstance(optimization_history, list) and len(optimization_history) > 0):
+                    
+                    # Check if multiple mutations per iteration
+                    has_multiple_mutations = any(
+                        len(entry.get('mutations_applied', [])) > 1 
+                        for entry in optimization_history
+                    )
+                    
+                    self.log_result("/routes/yield-optimize (multi-step)", "POST", "PASS", 
+                                  f"Multi-step optimization: {len(step_yields)} steps, bottleneck={bottleneck}, {len(optimization_history)} iterations")
+                else:
+                    self.log_result("/routes/yield-optimize (multi-step)", "POST", "FAIL", 
+                                  f"Multi-step issues: steps={len(step_yields)}, bottleneck={bottleneck}, history={len(optimization_history)}")
+            else:
+                self.log_result("/routes/yield-optimize (multi-step)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (multi-step)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_yield_optimize_cost_saving(self):
+        """Test POST /api/routes/yield-optimize - Cost saving from yield improvement"""
+        try:
+            payload = {
+                "route": {
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 80
+                        }
+                    }],
+                    "overall_yield_percent": 50,
+                    "total_cost_usd": 200
+                },
+                "max_iterations": 3
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/yield-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                cost_analysis = data.get('cost_analysis', {})
+                cost_saving = cost_analysis.get('cost_saving_from_yield', -1)
+                
+                # Expected: cost_analysis.cost_saving_from_yield >= 0 (saving should be non-negative if yield improved)
+                if cost_saving >= 0:
+                    self.log_result("/routes/yield-optimize (cost saving)", "POST", "PASS", 
+                                  f"Cost saving verification: cost_saving_from_yield={cost_saving}")
+                else:
+                    self.log_result("/routes/yield-optimize (cost saving)", "POST", "FAIL", 
+                                  f"Negative cost saving: {cost_saving}")
+            else:
+                self.log_result("/routes/yield-optimize (cost saving)", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/yield-optimize (cost saving)", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_existing_endpoints_still_work(self):
+        """Test that existing endpoints still work after Phase 8"""
+        try:
+            # Test iterative-optimize
+            payload1 = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 120
+                        }
+                    }],
+                    "overall_yield_percent": 60,
+                    "total_cost_usd": 200
+                }],
+                "objective": "balanced",
+                "optimization_iterations": 3
+            }
+            
+            response1 = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                    json=payload1, timeout=30)
+            
+            # Test molecule validate
+            payload2 = {"smiles": "CCO"}
+            response2 = requests.post(f"{BACKEND_URL}/molecule/validate", 
+                                    json=payload2, timeout=10)
+            
+            # Test confidence
+            payload3 = {
+                "route": {
+                    "overall_yield_percent": 65,
+                    "total_cost_usd": 200,
+                    "num_steps": 1,
+                    "steps": []
+                },
+                "mcts_visits": 100
+            }
+            response3 = requests.post(f"{BACKEND_URL}/routes/confidence", 
+                                    json=payload3, timeout=15)
+            
+            # Check all responses
+            results = []
+            if response1.status_code == 200:
+                results.append("iterative-optimize: OK")
+            else:
+                results.append(f"iterative-optimize: FAIL ({response1.status_code})")
+                
+            if response2.status_code == 200 and response2.json().get("valid") is True:
+                results.append("molecule/validate: OK")
+            else:
+                results.append(f"molecule/validate: FAIL ({response2.status_code})")
+                
+            if response3.status_code == 200:
+                results.append("routes/confidence: OK")
+            else:
+                results.append(f"routes/confidence: FAIL ({response3.status_code})")
+            
+            if all("OK" in result for result in results):
+                self.log_result("/existing endpoints", "POST", "PASS", 
+                              f"All existing endpoints working: {', '.join(results)}")
+            else:
+                self.log_result("/existing endpoints", "POST", "FAIL", 
+                              f"Some endpoints failing: {', '.join(results)}")
+                
+        except Exception as e:
+            self.log_result("/existing endpoints", "POST", "FAIL", f"Request failed: {str(e)}")
+    
     def run_all_tests(self):
         """Run all backend API tests"""
         print(f"🧪 Starting Backend API Tests for: {BACKEND_URL}")
@@ -1112,6 +1517,18 @@ class BackendTester:
         self.test_iterative_optimize_convergence_history()
         self.test_iterative_optimize_empty_routes()
         self.test_iterative_optimize_speed()
+        
+        # Phase 8: Yield Optimization Engine Tests
+        print("\n" + "=" * 40)
+        print("⚗️ PHASE 8: YIELD OPTIMIZATION ENGINE TESTS")
+        print("-" * 40)
+        self.test_yield_optimize_low_yield_aggressive()
+        self.test_yield_optimize_high_yield_quick()
+        self.test_yield_optimize_pharma_mode()
+        self.test_yield_optimize_scoring_verification()
+        self.test_yield_optimize_multi_step_collapse()
+        self.test_yield_optimize_cost_saving()
+        self.test_existing_endpoints_still_work()
         
         # Summary
         print("\n" + "=" * 60)

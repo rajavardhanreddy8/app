@@ -13,6 +13,7 @@ import ConditionPredictorPage from "@/pages/ConditionPredictorPage";
 import EquipmentPage from "@/pages/EquipmentPage";
 import RouteOptimizerPage from "@/pages/RouteOptimizerPage";
 import ConvergenceLoopPage from "@/pages/ConvergenceLoopPage";
+import YieldOptimizerPage from "@/pages/YieldOptimizerPage";
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
           <Route path="/equipment" element={<EquipmentPage />} />
           <Route path="/optimizer" element={<RouteOptimizerPage />} />
           <Route path="/convergence" element={<ConvergenceLoopPage />} />
+          <Route path="/yield" element={<YieldOptimizerPage />} />
           <Route path="/history" element={<HistoryPage />} />
         </Routes>
       </Layout>

@@ -25,6 +25,7 @@ const navItems = [
   { path: "/copilot", label: "AI Copilot", icon: MessageSquare },
   { path: "/optimizer", label: "Route Optimizer", icon: Zap },
   { path: "/convergence", label: "Convergence Loop", icon: Target },
+  { path: "/yield", label: "Yield Optimizer", icon: FlaskConical },
   { path: "/scale-up", label: "Scale-Up & Cost", icon: Scale },
   { path: "/conditions", label: "Condition Predictor", icon: Thermometer },
   { path: "/equipment", label: "Equipment", icon: Wrench },
