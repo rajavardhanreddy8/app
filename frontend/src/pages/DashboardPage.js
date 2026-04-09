@@ -19,6 +19,7 @@ import {
   Cpu,
   FlaskConical,
   Zap,
+  Target,
 } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -88,6 +89,13 @@ const DashboardPage = () => {
       icon: Zap,
       link: "/optimizer",
       color: "from-yellow-500 to-lime-500",
+    },
+    {
+      title: "Convergence Loop",
+      desc: "Iterative self-improving optimization",
+      icon: Target,
+      link: "/convergence",
+      color: "from-pink-500 to-rose-500",
     },
     {
       title: "Scale-Up & Cost",

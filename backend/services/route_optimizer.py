@@ -139,20 +139,84 @@ class RouteOptimizer:
     
     # ============ 1. ROUTE MUTATION ============
     
-    def mutate_route(self, route: Dict, mutation_types: List[str] = None) -> Dict:
+    # Objective-driven mutation priority maps
+    OBJECTIVE_PRIORITIES = {
+        "pharma": {
+            "description": "Maximize yield, minimize impurities",
+            "priorities": ["increase_yield", "reduce_loss"],
+            "yield_weight": 0.60,
+            "cost_weight": 0.10,
+            "safety_weight": 0.20,
+            "green_weight": 0.10,
+            "min_yield": 99.0,
+        },
+        "cost": {
+            "description": "Minimize total cost",
+            "priorities": ["cheap_reagents", "fewer_steps"],
+            "yield_weight": 0.20,
+            "cost_weight": 0.50,
+            "safety_weight": 0.15,
+            "green_weight": 0.15,
+            "min_yield": 50.0,
+        },
+        "green": {
+            "description": "Maximize sustainability",
+            "priorities": ["green_solvents", "recyclable_catalysts"],
+            "yield_weight": 0.20,
+            "cost_weight": 0.15,
+            "safety_weight": 0.20,
+            "green_weight": 0.45,
+            "min_yield": 50.0,
+        },
+        "speed": {
+            "description": "Minimize total time",
+            "priorities": ["faster_reactions", "fewer_steps"],
+            "yield_weight": 0.25,
+            "cost_weight": 0.20,
+            "safety_weight": 0.20,
+            "green_weight": 0.10,
+            "min_yield": 50.0,
+        },
+        "balanced": {
+            "description": "Balance all objectives",
+            "priorities": ["all"],
+            "yield_weight": 0.30,
+            "cost_weight": 0.25,
+            "safety_weight": 0.25,
+            "green_weight": 0.20,
+            "min_yield": 50.0,
+        },
+    }
+    
+    def mutate_route(self, route: Dict, mutation_types: List[str] = None, objective: str = "balanced") -> Dict:
         """
-        Apply mutations to optimize a route.
+        Apply mutations to optimize a route, driven by objective.
         
         Args:
             route: Route dict with steps
             mutation_types: List of mutations to apply. 
                 Options: ["catalyst_swap", "solvent_optimization", "temperature_tune", "all"]
+            objective: Optimization objective ("pharma", "cost", "green", "speed", "balanced")
         
         Returns:
             Mutated route with improvements tracked
         """
+        obj_config = self.OBJECTIVE_PRIORITIES.get(objective, self.OBJECTIVE_PRIORITIES["balanced"])
+        
         if mutation_types is None or "all" in (mutation_types or []):
-            mutation_types = ["catalyst_swap", "solvent_optimization", "temperature_tune"]
+            # Objective-driven mutation selection
+            priorities = obj_config["priorities"]
+            mutation_types = []
+            
+            if "all" in priorities or "cheap_reagents" in priorities or "increase_yield" in priorities:
+                mutation_types.append("catalyst_swap")
+            if "all" in priorities or "green_solvents" in priorities or "cheap_reagents" in priorities:
+                mutation_types.append("solvent_optimization")
+            if "all" in priorities or "reduce_loss" in priorities or "faster_reactions" in priorities:
+                mutation_types.append("temperature_tune")
+            
+            if not mutation_types:
+                mutation_types = ["catalyst_swap", "solvent_optimization", "temperature_tune"]
         
         mutated_route = copy.deepcopy(route)
         mutations_applied = []
@@ -167,17 +231,17 @@ class RouteOptimizer:
             conditions = step.get('conditions', step)
             
             if "catalyst_swap" in mutation_types:
-                mutation = self._mutate_catalyst(conditions, step_idx)
+                mutation = self._mutate_catalyst(conditions, step_idx, objective=objective)
                 if mutation:
                     mutations_applied.append(mutation)
             
             if "solvent_optimization" in mutation_types:
-                mutation = self._mutate_solvent(conditions, step_idx)
+                mutation = self._mutate_solvent(conditions, step_idx, objective=objective)
                 if mutation:
                     mutations_applied.append(mutation)
             
             if "temperature_tune" in mutation_types:
-                mutation = self._mutate_temperature(conditions, step_idx)
+                mutation = self._mutate_temperature(conditions, step_idx, objective=objective)
                 if mutation:
                     mutations_applied.append(mutation)
         
@@ -195,9 +259,10 @@ class RouteOptimizer:
         
         return mutated_route
     
-    def _mutate_catalyst(self, conditions: Dict, step_idx: int) -> Optional[MutationResult]:
-        """Swap catalyst for cheaper/greener/more efficient alternative."""
+    def _mutate_catalyst(self, conditions: Dict, step_idx: int, objective: str = "balanced") -> Optional[MutationResult]:
+        """Swap catalyst for cheaper/greener/more efficient alternative based on objective."""
         current_cat = conditions.get('catalyst', 'None')
+        obj_config = self.OBJECTIVE_PRIORITIES.get(objective, self.OBJECTIVE_PRIORITIES["balanced"])
         
         alternatives = CATALYST_ALTERNATIVES.get(current_cat, [])
         if not alternatives:
@@ -205,7 +270,6 @@ class RouteOptimizer:
         
         current_props = CATALYST_PROPERTIES.get(current_cat, {"cost_per_g": 10, "recyclable": False})
         
-        # Find best alternative (cheapest recyclable option)
         best_alt = None
         best_score = 0
         
@@ -213,17 +277,24 @@ class RouteOptimizer:
             alt_props = CATALYST_PROPERTIES.get(alt, {"cost_per_g": 10, "recyclable": False})
             score = 0
             
-            # Prefer cheaper
-            if alt_props['cost_per_g'] < current_props['cost_per_g']:
-                score += 3
+            # Cost-driven scoring
+            cost_improvement = current_props['cost_per_g'] - alt_props['cost_per_g']
+            if cost_improvement > 0:
+                score += cost_improvement * obj_config['cost_weight'] * 0.5
             
-            # Prefer recyclable
+            # Green scoring (recyclable)
             if alt_props.get('recyclable', False):
-                score += 2
+                score += 3 * obj_config['green_weight'] * 2
             
-            # Prefer lower toxicity
+            # Safety scoring
             tox_scores = {"none": 4, "low": 3, "medium": 1, "high": 0}
-            score += tox_scores.get(alt_props.get('toxicity', 'medium'), 1)
+            score += tox_scores.get(alt_props.get('toxicity', 'medium'), 1) * obj_config['safety_weight']
+            
+            # Pharma mode: penalize less-proven catalysts
+            if objective == "pharma":
+                if alt_props.get('recyclable', False):
+                    score += 1  # Slight preference for well-known catalysts
+                score -= 1  # Small penalty for any change in pharma mode
             
             if score > best_score:
                 best_score = score
@@ -249,9 +320,10 @@ class RouteOptimizer:
         
         return None
     
-    def _mutate_solvent(self, conditions: Dict, step_idx: int) -> Optional[MutationResult]:
-        """Optimize solvent for greener/cheaper alternative."""
+    def _mutate_solvent(self, conditions: Dict, step_idx: int, objective: str = "balanced") -> Optional[MutationResult]:
+        """Optimize solvent for greener/cheaper alternative based on objective."""
         current_solv = conditions.get('solvent', 'None')
+        obj_config = self.OBJECTIVE_PRIORITIES.get(objective, self.OBJECTIVE_PRIORITIES["balanced"])
         
         alternatives = SOLVENT_ALTERNATIVES.get(current_solv, [])
         if not alternatives:
@@ -267,13 +339,15 @@ class RouteOptimizer:
             alt_props = SOLVENT_PROPERTIES.get(alt, {"green_score": 5, "cost_per_L": 20, "bp_c": 100})
             score = 0
             
-            # Green score improvement
-            if alt_props['green_score'] > current_props.get('green_score', 5):
-                score += (alt_props['green_score'] - current_props.get('green_score', 5))
+            # Green score improvement (weighted by objective)
+            green_delta = alt_props['green_score'] - current_props.get('green_score', 5)
+            if green_delta > 0:
+                score += green_delta * obj_config['green_weight'] * 2
             
-            # Cost improvement
-            if alt_props['cost_per_L'] < current_props.get('cost_per_L', 20):
-                score += 2
+            # Cost improvement (weighted by objective)
+            cost_delta = current_props.get('cost_per_L', 20) - alt_props['cost_per_L']
+            if cost_delta > 0:
+                score += cost_delta * obj_config['cost_weight'] * 0.1
             
             # Must be compatible with temperature (bp > reaction temp + 10°C margin)
             if alt_props['bp_c'] < (temp + 10):
@@ -303,31 +377,43 @@ class RouteOptimizer:
         
         return None
     
-    def _mutate_temperature(self, conditions: Dict, step_idx: int) -> Optional[MutationResult]:
-        """Tune temperature for better yield/safety balance."""
+    def _mutate_temperature(self, conditions: Dict, step_idx: int, objective: str = "balanced") -> Optional[MutationResult]:
+        """Tune temperature for better yield/safety balance based on objective."""
         temp_key = 'temperature_celsius' if 'temperature_celsius' in conditions else 'temperature_c'
         current_temp = conditions.get(temp_key, 25)
         
         if current_temp is None:
             return None
         
-        # Evaluate if temperature should be lowered (safety) or raised (yield)
         optimal_temp = current_temp
         reason = ""
         
-        # High temperature → suggest lowering for safety
-        if current_temp > 150:
-            optimal_temp = current_temp - self.temperature_step * 2
-            reason = f"Reduced from {current_temp}°C for improved safety margin"
-        elif current_temp > 100:
-            optimal_temp = current_temp - self.temperature_step
-            reason = f"Reduced from {current_temp}°C for better selectivity"
-        # Low temperature → suggest slight increase for faster kinetics
-        elif current_temp < 0:
-            optimal_temp = current_temp + self.temperature_step
-            reason = f"Increased from {current_temp}°C for faster kinetics"
+        if objective == "pharma":
+            # Pharma: slight reduction for selectivity, never increase
+            if current_temp > 100:
+                optimal_temp = current_temp - self.temperature_step * 2
+                reason = f"Pharma mode: reduced from {current_temp}°C for selectivity/purity"
+            elif current_temp > 60:
+                optimal_temp = current_temp - self.temperature_step
+                reason = f"Pharma mode: reduced from {current_temp}°C for selectivity"
+        elif objective == "speed":
+            # Speed: increase if reasonable for faster kinetics
+            if current_temp < 100 and current_temp > 0:
+                optimal_temp = current_temp + self.temperature_step
+                reason = f"Speed mode: increased from {current_temp}°C for faster kinetics"
         else:
-            return None  # Temperature is in reasonable range
+            # Default: safety-driven
+            if current_temp > 150:
+                optimal_temp = current_temp - self.temperature_step * 2
+                reason = f"Reduced from {current_temp}°C for improved safety margin"
+            elif current_temp > 100:
+                optimal_temp = current_temp - self.temperature_step
+                reason = f"Reduced from {current_temp}°C for better selectivity"
+            elif current_temp < 0:
+                optimal_temp = current_temp + self.temperature_step
+                reason = f"Increased from {current_temp}°C for faster kinetics"
+            else:
+                return None
         
         if optimal_temp != current_temp:
             conditions[temp_key] = optimal_temp
@@ -701,3 +787,82 @@ class RouteOptimizer:
             'overall_score': round(overall_score, 1),
             'hard_constraints_violated': len(hard_constraints)
         }
+
+    # ============ 5. ROUTE SCORING ============
+    
+    def score_route(self, route: Dict, objective: str = "balanced") -> float:
+        """
+        Score a route based on objective weights.
+        
+        Args:
+            route: Route dict with metrics
+            objective: Optimization objective
+            
+        Returns:
+            Weighted score (0-100)
+        """
+        obj_config = self.OBJECTIVE_PRIORITIES.get(objective, self.OBJECTIVE_PRIORITIES["balanced"])
+        
+        # Extract metrics
+        overall_yield = route.get('overall_yield_percent', route.get('estimated_yield', 50.0))
+        total_cost = route.get('total_cost_usd', 100.0)
+        num_steps = route.get('num_steps', len(route.get('steps', [])))
+        total_time = route.get('total_time_hours', num_steps * 4.0)
+        
+        # Yield score (0-100)
+        yield_score = min(100, overall_yield)
+        
+        # Cost score (0-100, lower cost = higher score)
+        cost_score = max(0, 100 - total_cost / 10)
+        
+        # Safety score from constraints
+        safety_score = 80.0
+        if self.constraints_engine:
+            steps = route.get('steps', [])
+            for step in steps:
+                if isinstance(step, dict):
+                    try:
+                        reaction = step.get('conditions', step)
+                        if reaction:
+                            constraints = self.constraints_engine.evaluate_reaction_constraints(
+                                reaction=reaction, scale='lab', batch_size_kg=0.1
+                            )
+                            safety_score = min(safety_score, 100 - constraints.total_penalty)
+                    except Exception:
+                        pass
+        
+        # Green score (solvent + catalyst greenness)
+        green_score = 50.0
+        steps = route.get('steps', [])
+        solvent_greens = []
+        for step in steps:
+            if isinstance(step, dict):
+                conditions = step.get('conditions', step)
+                solvent = conditions.get('solvent', 'None')
+                props = SOLVENT_PROPERTIES.get(solvent, {})
+                solvent_greens.append(props.get('green_score', 5) * 10)
+                
+                catalyst = conditions.get('catalyst', 'None')
+                cat_props = CATALYST_PROPERTIES.get(catalyst, {})
+                if cat_props.get('recyclable', False):
+                    solvent_greens.append(80)
+                tox = cat_props.get('toxicity', 'medium')
+                tox_map = {"none": 90, "low": 70, "medium": 40, "high": 10}
+                solvent_greens.append(tox_map.get(tox, 40))
+        
+        if solvent_greens:
+            green_score = sum(solvent_greens) / len(solvent_greens)
+        
+        # Step penalty
+        step_penalty = max(0, num_steps - 3) * 5
+        
+        # Weighted combination
+        weighted_score = (
+            obj_config['yield_weight'] * yield_score +
+            obj_config['cost_weight'] * cost_score +
+            obj_config['safety_weight'] * safety_score +
+            obj_config['green_weight'] * green_score -
+            step_penalty
+        )
+        
+        return round(max(0, min(100, weighted_score)), 2)

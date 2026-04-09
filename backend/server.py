@@ -21,6 +21,7 @@ from services.template_extractor import TemplateExtractor
 from services.equipment_recommender import EquipmentRecommender
 from services.route_optimizer import RouteOptimizer
 from services.process_constraints_engine import ProcessConstraintsEngine
+from services.convergence_engine import ConvergenceEngine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -42,6 +43,7 @@ equipment_recommender = EquipmentRecommender()
 # Phase 6 Optimization Layer
 constraints_engine = ProcessConstraintsEngine()
 route_optimizer = None  # Will be initialized in startup
+convergence_engine = None  # Phase 7 convergence engine
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -117,7 +119,7 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 @app.on_event("startup")
 async def startup_event():
     """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
-    global orchestrator, route_optimizer
+    global orchestrator, route_optimizer, convergence_engine
     
     if orchestrator:
         try:
@@ -132,10 +134,15 @@ async def startup_event():
             constraints_engine=constraints_engine,
             equipment_recommender=equipment_recommender
         )
-        logging.info("✓ Route optimizer initialized")
+        convergence_engine = ConvergenceEngine(
+            route_optimizer=route_optimizer,
+            constraints_engine=constraints_engine
+        )
+        logging.info("✓ Route optimizer + convergence engine initialized")
     except Exception as e:
         logging.error(f"✗ Route optimizer init failed: {str(e)}")
         route_optimizer = RouteOptimizer()
+        convergence_engine = ConvergenceEngine(route_optimizer=route_optimizer)
 
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
@@ -648,6 +655,15 @@ class FullOptimizationRequest(BaseModel):
     mutation_types: Optional[List[str]] = None
 
 
+class IterativeOptimizationRequest(BaseModel):
+    routes: List[Dict[str, Any]]
+    objective: str = "balanced"  # "pharma", "cost", "green", "speed", "balanced"
+    optimization_iterations: int = 3
+    top_k: int = 5
+    early_stop_threshold: float = 0.5
+    pharma_mode: bool = False
+
+
 @api_router.post("/routes/mutate")
 async def mutate_route(request: RouteMutationRequest):
     """
@@ -845,6 +861,55 @@ async def full_route_optimization(request: FullOptimizationRequest):
     except Exception as e:
         logging.error(f"Full optimization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/iterative-optimize")
+async def iterative_optimization(request: IterativeOptimizationRequest):
+    """
+    Phase 7: Iterative Optimization Convergence Loop.
+    
+    Runs: search → improve → re-search → converge → best possible route
+    
+    Supports objectives: pharma, cost, green, speed, balanced
+    Includes early stopping, pharma mode, and improvement tracking.
+    """
+    try:
+        if not convergence_engine:
+            raise HTTPException(status_code=503, detail="Convergence engine not initialized")
+        
+        if not request.routes:
+            raise HTTPException(status_code=400, detail="At least one route required")
+        
+        result = convergence_engine.optimize(
+            routes=request.routes,
+            objective=request.objective,
+            max_iterations=request.optimization_iterations,
+            top_k=request.top_k,
+            early_stop_threshold=request.early_stop_threshold,
+            pharma_mode=request.pharma_mode,
+        )
+        
+        return {
+            'status': result.status,
+            'objective': result.objective,
+            'pharma_mode': result.pharma_mode,
+            'total_iterations': result.total_iterations,
+            'total_improvement': result.total_improvement,
+            'initial_score': result.initial_score,
+            'final_score': result.final_score,
+            'early_stopped': result.early_stopped,
+            'early_stop_reason': result.early_stop_reason,
+            'convergence_history': result.convergence_history,
+            'best_routes': result.best_routes,
+            'total_duration_ms': result.total_duration_ms,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Iterative optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Include the router in the main app
 app.include_router(api_router)

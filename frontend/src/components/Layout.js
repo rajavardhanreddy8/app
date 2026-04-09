@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   GitBranch,
   Zap,
+  Target,
 } from "lucide-react";
 
 const navItems = [
@@ -23,6 +24,7 @@ const navItems = [
   { path: "/analyzer", label: "Molecule Analyzer", icon: Search },
   { path: "/copilot", label: "AI Copilot", icon: MessageSquare },
   { path: "/optimizer", label: "Route Optimizer", icon: Zap },
+  { path: "/convergence", label: "Convergence Loop", icon: Target },
   { path: "/scale-up", label: "Scale-Up & Cost", icon: Scale },
   { path: "/conditions", label: "Condition Predictor", icon: Thermometer },
   { path: "/equipment", label: "Equipment", icon: Wrench },

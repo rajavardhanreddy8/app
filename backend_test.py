@@ -725,6 +725,350 @@ class BackendTester:
         except Exception as e:
             self.log_result("/routes/optimize", "POST", "FAIL", f"Request failed: {str(e)}")
     
+    # ============ PHASE 7: ITERATIVE OPTIMIZATION TESTS ============
+    
+    def test_iterative_optimize_balanced(self):
+        """Test POST /routes/iterative-optimize - Balanced objective with 3 iterations"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [
+                        {
+                            "reaction_type": "esterification",
+                            "conditions": {
+                                "catalyst": "H2SO4",
+                                "solvent": "DCM",
+                                "temperature_celsius": 120
+                            }
+                        },
+                        {
+                            "reaction_type": "suzuki_coupling",
+                            "conditions": {
+                                "catalyst": "Pd(PPh3)4",
+                                "solvent": "DMF",
+                                "temperature_celsius": 100
+                            }
+                        }
+                    ],
+                    "overall_yield_percent": 60,
+                    "total_cost_usd": 350,
+                    "num_steps": 2
+                }],
+                "objective": "balanced",
+                "optimization_iterations": 3,
+                "top_k": 5,
+                "early_stop_threshold": 0.5,
+                "pharma_mode": False
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                required_fields = ['status', 'objective', 'total_iterations', 'initial_score', 
+                                 'final_score', 'convergence_history', 'best_routes', 'total_improvement']
+                
+                if all(field in data for field in required_fields):
+                    # Verify convergence logic
+                    if (data['status'] in ['converged', 'max_iterations'] and 
+                        data['objective'] == 'balanced' and
+                        isinstance(data['convergence_history'], list) and
+                        isinstance(data['best_routes'], list) and
+                        data['total_improvement'] >= 0):
+                        self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                      f"Balanced optimization: {data['status']}, improvement: {data['total_improvement']}")
+                    else:
+                        self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                      f"Invalid optimization results: {data}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Missing required fields: {data}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_cost(self):
+        """Test POST /routes/iterative-optimize - Cost objective"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "Pd(PPh3)4",
+                            "solvent": "THF",
+                            "temperature_celsius": 80
+                        }
+                    }],
+                    "overall_yield_percent": 70,
+                    "total_cost_usd": 500
+                }],
+                "objective": "cost",
+                "optimization_iterations": 5
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('objective') == 'cost':
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Cost optimization: {data['status']}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Wrong objective returned: {data.get('objective')}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_green(self):
+        """Test POST /routes/iterative-optimize - Green objective"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [
+                        {
+                            "reaction_type": "coupling",
+                            "conditions": {
+                                "catalyst": "Pd(PPh3)4",
+                                "solvent": "benzene",
+                                "temperature_celsius": 80
+                            }
+                        },
+                        {
+                            "reaction_type": "reduction",
+                            "conditions": {
+                                "catalyst": "AlCl3",
+                                "solvent": "chloroform",
+                                "temperature_celsius": 60
+                            }
+                        }
+                    ],
+                    "overall_yield_percent": 70,
+                    "total_cost_usd": 200
+                }],
+                "objective": "green",
+                "optimization_iterations": 5
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('objective') == 'green':
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Green optimization: {data['status']}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Wrong objective returned: {data.get('objective')}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_pharma(self):
+        """Test POST /routes/iterative-optimize - Pharma mode"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "coupling",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 50
+                        }
+                    }],
+                    "overall_yield_percent": 99.5,
+                    "total_cost_usd": 800
+                }],
+                "objective": "pharma",
+                "optimization_iterations": 3,
+                "pharma_mode": True
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('pharma_mode') == True and data.get('objective') == 'pharma':
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Pharma mode optimization: {data['status']}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Pharma mode not properly set: pharma_mode={data.get('pharma_mode')}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_early_stopping(self):
+        """Test POST /routes/iterative-optimize - Early stopping verification"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 120
+                        }
+                    }],
+                    "overall_yield_percent": 60,
+                    "total_cost_usd": 200
+                }],
+                "objective": "balanced",
+                "optimization_iterations": 10,
+                "early_stop_threshold": 0.5
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Check if early stopping worked (should stop before 10 iterations)
+                if (data.get('total_iterations', 10) < 10 and 
+                    data.get('early_stopped') == True):
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Early stopping worked: stopped at {data['total_iterations']} iterations")
+                elif data.get('total_iterations') == 10:
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Completed all iterations without early stopping: {data['total_iterations']}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Unexpected early stopping behavior: {data}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_convergence_history(self):
+        """Test POST /routes/iterative-optimize - Convergence history tracking"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 120
+                        }
+                    }],
+                    "overall_yield_percent": 60,
+                    "total_cost_usd": 350
+                }],
+                "objective": "balanced",
+                "optimization_iterations": 3
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                history = data.get('convergence_history', [])
+                
+                if isinstance(history, list) and len(history) > 0:
+                    # Check first history entry has required fields
+                    first_entry = history[0]
+                    required_fields = ['iteration', 'score_before', 'score_after', 
+                                     'improvement', 'mutations_applied', 'changes', 
+                                     'routes_evaluated', 'routes_kept']
+                    
+                    if all(field in first_entry for field in required_fields):
+                        self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                      f"Convergence history tracked: {len(history)} entries")
+                    else:
+                        self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                      f"Missing fields in convergence history: {first_entry}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"No convergence history returned: {history}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_empty_routes(self):
+        """Test POST /routes/iterative-optimize - Empty routes should fail"""
+        try:
+            payload = {
+                "routes": [],
+                "objective": "balanced"
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 400:
+                self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                              "Empty routes correctly rejected with 400 error")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Expected 400 error for empty routes, got {response.status_code}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
+    def test_iterative_optimize_speed(self):
+        """Test POST /routes/iterative-optimize - Speed objective"""
+        try:
+            payload = {
+                "routes": [{
+                    "steps": [{
+                        "reaction_type": "esterification",
+                        "conditions": {
+                            "catalyst": "H2SO4",
+                            "solvent": "DCM",
+                            "temperature_celsius": 50
+                        }
+                    }],
+                    "overall_yield_percent": 70,
+                    "total_cost_usd": 200
+                }],
+                "objective": "speed",
+                "optimization_iterations": 3
+            }
+            
+            response = requests.post(f"{BACKEND_URL}/routes/iterative-optimize", 
+                                   json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('objective') == 'speed':
+                    self.log_result("/routes/iterative-optimize", "POST", "PASS", 
+                                  f"Speed optimization: {data['status']}")
+                else:
+                    self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                                  f"Wrong objective returned: {data.get('objective')}")
+            else:
+                self.log_result("/routes/iterative-optimize", "POST", "FAIL", 
+                              f"Status {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_result("/routes/iterative-optimize", "POST", "FAIL", f"Request failed: {str(e)}")
+    
     def run_all_tests(self):
         """Run all backend API tests"""
         print(f"🧪 Starting Backend API Tests for: {BACKEND_URL}")
@@ -755,6 +1099,19 @@ class BackendTester:
         self.test_routes_equipment_check_feasible()
         self.test_routes_equipment_check_hard_constraints()
         self.test_routes_optimize_full()
+        
+        # Phase 7: Iterative Optimization Tests
+        print("\n" + "=" * 40)
+        print("🔄 PHASE 7: ITERATIVE OPTIMIZATION TESTS")
+        print("-" * 40)
+        self.test_iterative_optimize_balanced()
+        self.test_iterative_optimize_cost()
+        self.test_iterative_optimize_green()
+        self.test_iterative_optimize_pharma()
+        self.test_iterative_optimize_early_stopping()
+        self.test_iterative_optimize_convergence_history()
+        self.test_iterative_optimize_empty_routes()
+        self.test_iterative_optimize_speed()
         
         # Summary
         print("\n" + "=" * 60)
