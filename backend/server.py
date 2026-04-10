@@ -23,6 +23,7 @@ from services.route_optimizer import RouteOptimizer
 from services.process_constraints_engine import ProcessConstraintsEngine
 from services.convergence_engine import ConvergenceEngine
 from services.yield_optimization_engine import YieldOptimizationEngine
+from services.closed_loop_learning_engine import ClosedLoopLearningEngine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -46,6 +47,7 @@ constraints_engine = ProcessConstraintsEngine()
 route_optimizer = None  # Will be initialized in startup
 convergence_engine = None  # Phase 7 convergence engine
 yield_engine = None  # Phase 8 yield optimization engine
+learning_engine = None  # Phase 10 closed-loop learning
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -121,7 +123,7 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 @app.on_event("startup")
 async def startup_event():
     """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
-    global orchestrator, route_optimizer, convergence_engine, yield_engine
+    global orchestrator, route_optimizer, convergence_engine, yield_engine, learning_engine
     
     if orchestrator:
         try:
@@ -143,12 +145,17 @@ async def startup_event():
         yield_engine = YieldOptimizationEngine(
             constraints_engine=constraints_engine
         )
-        logging.info("✓ Route optimizer + convergence + yield engine initialized")
+        learning_engine = ClosedLoopLearningEngine(
+            db=db,
+            retrain_threshold=int(os.getenv("FEEDBACK_RETRAIN_THRESHOLD", "25"))
+        )
+        logging.info("✓ Route optimizer + convergence + yield + closed-loop learning initialized")
     except Exception as e:
         logging.error(f"✗ Route optimizer init failed: {str(e)}")
         route_optimizer = RouteOptimizer()
         convergence_engine = ConvergenceEngine(route_optimizer=route_optimizer)
         yield_engine = YieldOptimizationEngine()
+        learning_engine = ClosedLoopLearningEngine(db=db)
 
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
@@ -676,6 +683,23 @@ class YieldOptimizationRequest(BaseModel):
     max_iterations: int = 5
     target_yield: float = 0.99
 
+class FeedbackIngestionRequest(BaseModel):
+    predicted_route_id: Optional[str] = None
+    actual_yield_percent: float
+    actual_temperature_c: Optional[float] = None
+    actual_time_hours: Optional[float] = None
+    failures: List[str] = []
+    deviations: List[str] = []
+    equipment_performance: Dict[str, Any] = {}
+    mutation_history: List[Any] = []
+    source: str = "manual"  # manual | lab | industrial | simulated
+    verified: Optional[bool] = None
+    timestamp: Optional[str] = None
+
+
+class RetrainRequest(BaseModel):
+    reason: str = "manual"
+
 
 @api_router.post("/routes/mutate")
 async def mutate_route(request: RouteMutationRequest):
@@ -969,7 +993,7 @@ async def yield_optimization(request: YieldOptimizationRequest):
             'scoring': {
                 'initial_score': result.initial_score,
                 'final_score': result.final_score,
-                'score_formula': 'yield^5 × 100 - cost_penalty - constraint_penalty',
+                'score_formula': 'yield^5 × 100 - cost_penalty - constraint_penalty - equipment_penalty',
             },
             'optimization_history': result.optimization_history,
             'optimized_route': result.optimized_route,
@@ -982,6 +1006,85 @@ async def yield_optimization(request: YieldOptimizationRequest):
         raise
     except Exception as e:
         logging.error(f"Yield optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/feedback")
+async def ingest_feedback(request: FeedbackIngestionRequest):
+    """Phase 10: Ingest real-world process feedback for closed-loop learning."""
+    try:
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+
+        result = await learning_engine.ingest_feedback(request.model_dump())
+
+        # Push learned mutation priorities into adaptive yield optimizer
+        priorities = await learning_engine.mutation_priorities()
+        if yield_engine and priorities:
+            yield_engine.set_mutation_priorities(priorities)
+
+        return {
+            "status": "success",
+            "feedback_id": result.feedback_id,
+            "verified": result.verified,
+            "outlier_score": result.outlier_score,
+            "retrain_triggered": result.retrain_triggered,
+            "model_versions": result.model_versions,
+            "mutation_priorities": priorities,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Feedback ingestion failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/models/retrain")
+async def retrain_models(request: RetrainRequest):
+    """Phase 10: Manual model retraining trigger with version bump."""
+    try:
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+        versions = await learning_engine.trigger_retraining(reason=request.reason)
+        return {"status": "success", "versions": versions}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Manual retraining failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/learning/status")
+async def learning_status():
+    """Phase 10: Closed-loop learning status and memory diagnostics."""
+    try:
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+
+        total_feedback = await db.feedback.count_documents({})
+        verified_feedback = await db.feedback.count_documents({"verified": True})
+        mutation_priorities = await learning_engine.mutation_priorities()
+        latest_versions = {}
+        for model in learning_engine.model_names:
+            latest = await db.model_versions.find_one({"model": model}, sort=[("created_at", -1)])
+            latest_versions[model] = latest["version"] if latest else "v0"
+
+        return {
+            "status": "success",
+            "feedback": {
+                "total": total_feedback,
+                "verified": verified_feedback,
+                "retrain_threshold": learning_engine.retrain_threshold,
+            },
+            "models": latest_versions,
+            "mutation_priorities": mutation_priorities,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Learning status failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
