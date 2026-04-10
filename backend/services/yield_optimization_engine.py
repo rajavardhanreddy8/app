@@ -596,7 +596,7 @@ class YieldOptimizationEngine:
     
     def _yield_dominant_score(self, route: Dict, total_yield: float = None) -> float:
         """
-        Yield-dominant scoring: score = yield^5 - cost_penalty - constraint_penalty
+        Yield-dominant scoring: score = yield^5 - cost_penalty - constraint_penalty - equipment_penalty
         
         yield^5 forces yield dominance:
         - 0.99^5 = 0.951 (excellent)
@@ -628,5 +628,9 @@ class YieldOptimizationEngine:
                     except Exception:
                         pass
         
-        score = yield_score - cost_penalty - constraint_penalty
+        equipment_penalty = route.get('equipment_penalty', 0.0)
+        if route.get('equipment_rejected', False):
+            equipment_penalty += 100.0
+
+        score = yield_score - cost_penalty - constraint_penalty - equipment_penalty
         return max(0, min(100, score))
