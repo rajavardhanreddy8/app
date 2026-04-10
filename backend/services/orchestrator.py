@@ -558,17 +558,6 @@ class SynthesisPlanningOrchestrator:
 
         return route
 
-    def _calculate_industrial_costs(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
-        """Calculate industrial costs with hybrid caching."""
-        total_cost = 0.0
-        cost_breakdown = {
-            'reagent_cost': 0.0,
-            'energy_cost': 0.0,
-            'labor_cost': 0.0,
-            'equipment_cost': 0.0,
-            'waste_disposal_cost': 0.0
-        }
-
     def _evaluate_process_constraints(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
         """
         Phase 5: Evaluate physical realism and process constraints for each step.
