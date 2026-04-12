@@ -8,16 +8,33 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 class EnhancedRouteScorer:
-    """Advanced multi-objective route scoring with ML predictions."""
+    """
+    Advanced multi-objective route scoring with ML predictions.
     
-    def __init__(self):
+    Supports PHARMA MODE for pharmaceutical synthesis where ≥99% yield is mandatory.
+    """
+    
+    def __init__(self, pharma_mode: bool = False):
+        """
+        Initialize scorer with optional pharma mode.
+        
+        Args:
+            pharma_mode: If True, enforce pharma-grade yield requirements (≥99%)
+        """
         self.yield_predictor = YieldPredictor()
         self.cost_database = CostDatabase()
+        
+        # Pharma mode settings
+        self.pharma_mode = pharma_mode
+        self.pharma_min_yield = 99.0  # Minimum acceptable yield for pharma
         
         # Try to load ML model
         self.ml_available = self.yield_predictor.load_model()
         if not self.ml_available:
             logger.warning("ML yield predictor not available, using heuristics")
+        
+        if pharma_mode:
+            logger.info("EnhancedRouteScorer initialized in PHARMA MODE (≥99% yield enforced)")
     
     def predict_step_yield(self, step: ReactionStep) -> float:
         """Predict yield for a reaction step using ML or heuristics."""
@@ -68,10 +85,41 @@ class EnhancedRouteScorer:
         optimize_for: str = "balanced",
         weights: Optional[Dict[str, float]] = None
     ) -> Dict[str, Any]:
-        """Score a synthesis route using multi-objective optimization."""
+        """
+        Score a synthesis route using multi-objective optimization.
+        
+        In PHARMA MODE: Routes with <99% yield are rejected (score = -inf).
+        """
         
         # Calculate metrics
         metrics = self._calculate_route_metrics(route)
+        
+        # PHARMA MODE: Enforce minimum yield requirement
+        if self.pharma_mode:
+            overall_yield = metrics['overall_yield']
+            if overall_yield < self.pharma_min_yield:
+                logger.warning(
+                    f"pharma_mode_rejection: yield={overall_yield:.2f}% < {self.pharma_min_yield}% (REJECTED)"
+                )
+                return {
+                    'score': float('-inf'),
+                    'metrics': metrics,
+                    'weights': {},
+                    'optimization_goal': 'pharma',
+                    'rejected': True,
+                    'rejection_reason': f'Yield {overall_yield:.2f}% below pharma minimum {self.pharma_min_yield}%'
+                }
+            
+            # Add loss-based cost (Pharma principle: yield loss = material waste)
+            raw_material_cost = metrics['total_cost'] * 0.50  # Assume 50% is raw materials
+            loss_cost = (1.0 - (overall_yield / 100.0)) * raw_material_cost
+            metrics['loss_cost'] = loss_cost
+            metrics['adjusted_total_cost'] = metrics['total_cost'] + loss_cost
+            
+            logger.info(
+                f"pharma_scoring: yield={overall_yield:.2f}%, "
+                f"loss_cost=${loss_cost:.2f}, steps={metrics['num_steps']}"
+            )
         
         # Determine weights based on optimization goal
         if weights is None:
@@ -84,7 +132,8 @@ class EnhancedRouteScorer:
             'score': score,
             'metrics': metrics,
             'weights': weights,
-            'optimization_goal': optimize_for
+            'optimization_goal': optimize_for,
+            'rejected': False
         }
     
     def _calculate_route_metrics(self, route: SynthesisRoute) -> Dict[str, float]:
@@ -236,3 +285,57 @@ class EnhancedRouteScorer:
         )
         
         return float(min(100, max(0, score)))
+    
+    def compare_routes(
+        self, 
+        routes: List[SynthesisRoute], 
+        optimize_for: str = "balanced"
+    ) -> List[Dict[str, Any]]:
+        """
+        Compare multiple synthesis routes and return them ranked by score.
+        
+        In PHARMA MODE: Routes with <99% yield are automatically rejected.
+        """
+        
+        scored_routes = []
+        rejected_count = 0
+        
+        for route in routes:
+            try:
+                result = self.score_route(route, optimize_for)
+                
+                # Skip rejected routes (pharma mode)
+                if result.get('rejected', False):
+                    rejected_count += 1
+                    logger.debug(f"Route rejected: {result.get('rejection_reason')}")
+                    continue
+                
+                scored_routes.append({
+                    'route': route,
+                    'score': result['score'],
+                    'metrics': result['metrics']
+                })
+            except Exception as e:
+                logger.error(f"Failed to score route: {str(e)}")
+                # Include route with default score (not in pharma mode)
+                if not self.pharma_mode:
+                    scored_routes.append({
+                        'route': route,
+                        'score': route.score or 0.0,
+                        'metrics': {
+                            'overall_yield': route.overall_yield_percent,
+                            'total_cost': route.total_cost_usd,
+                            'num_steps': len(route.steps),
+                            'total_time_hours': route.total_time_hours,
+                            'complexity': 50.0,
+                            'feasibility': 50.0
+                        }
+                    })
+        
+        # Sort by score descending
+        scored_routes.sort(key=lambda x: x['score'], reverse=True)
+        
+        if self.pharma_mode and rejected_count > 0:
+            logger.warning(f"pharma_mode: {rejected_count} routes rejected for yield <{self.pharma_min_yield}%")
+        
+        return scored_routes

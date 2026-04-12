@@ -5,6 +5,52 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def normalize_reaction_fields(reaction: dict) -> dict:
+    """
+    Normalize reaction/step field names across planner modules.
+
+    Mappings (keeps both source and target keys for compatibility):
+    - temperature_celsius -> temperature_c
+    - time_hours -> time_h
+    - conditions.temperature_celsius -> top-level temperature_c
+
+    The function is idempotent and safe to call multiple times.
+    It also normalizes nested dict/list structures, including step.conditions.*
+    """
+    if not isinstance(reaction, dict):
+        return reaction
+
+    normalized = dict(reaction)
+
+    # Recurse into nested structures first.
+    for key, value in list(normalized.items()):
+        if isinstance(value, dict):
+            normalized[key] = normalize_reaction_fields(value)
+        elif isinstance(value, list):
+            normalized[key] = [
+                normalize_reaction_fields(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+
+    # Top-level aliases.
+    if "temperature_celsius" in normalized and "temperature_c" not in normalized:
+        normalized["temperature_c"] = normalized["temperature_celsius"]
+    if "time_hours" in normalized and "time_h" not in normalized:
+        normalized["time_h"] = normalized["time_hours"]
+
+    # Nested conditions aliases promoted to top level.
+    conditions = normalized.get("conditions")
+    if isinstance(conditions, dict):
+        if "temperature_celsius" in conditions:
+            normalized.setdefault("temperature_celsius", conditions["temperature_celsius"])
+            normalized.setdefault("temperature_c", conditions["temperature_celsius"])
+        if "time_hours" in conditions:
+            normalized.setdefault("time_hours", conditions["time_hours"])
+            normalized.setdefault("time_h", conditions["time_hours"])
+
+    return normalized
+
 class MolecularService:
     """Service for molecular structure operations using RDKit."""
     
@@ -58,6 +104,10 @@ class MolecularService:
     def validate_smiles(smiles: str) -> Dict[str, bool]:
         """Validate SMILES string for chemical correctness."""
         try:
+            # Bug Fix 1: Check for empty string before processing
+            if not smiles or smiles.strip() == "":
+                return {"valid": False, "reason": "Empty SMILES string"}
+            
             mol = Chem.MolFromSmiles(smiles)
             
             if mol is None:

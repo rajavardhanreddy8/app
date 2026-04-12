@@ -19,6 +19,11 @@ from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
 from services.template_extractor import TemplateExtractor
 from services.equipment_recommender import EquipmentRecommender
+from services.route_optimizer import RouteOptimizer
+from services.process_constraints_engine import ProcessConstraintsEngine
+from services.convergence_engine import ConvergenceEngine
+from services.yield_optimization_engine import YieldOptimizationEngine
+from services.closed_loop_learning_engine import ClosedLoopLearningEngine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -36,6 +41,13 @@ condition_predictor = ConditionPredictor()
 route_scorer = EnhancedRouteScorer()
 template_extractor = TemplateExtractor()
 equipment_recommender = EquipmentRecommender()
+
+# Phase 6 Optimization Layer
+constraints_engine = ProcessConstraintsEngine()
+route_optimizer = None  # Will be initialized in startup
+convergence_engine = None  # Phase 7 convergence engine
+yield_engine = None  # Phase 8 yield optimization engine
+learning_engine = None  # Phase 10 closed-loop learning
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -93,9 +105,10 @@ async def create_status_check(input: StatusCheckCreate):
     return status_obj
 
 @api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+async def get_status_checks(limit: int = 100, skip: int = 0):
+    """Get status check history with pagination support."""
+    # Exclude MongoDB's _id field from the query results with proper pagination
+    status_checks = await db.status_checks.find({}, {"_id": 0}).skip(skip).limit(min(limit, 1000)).to_list(min(limit, 1000))
     
     # Convert ISO string timestamps back to datetime objects
     for check in status_checks:
@@ -104,18 +117,76 @@ async def get_status_checks():
     
     return status_checks
 
+
+
+# Phase 6: Initialize chemical graph on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize chemical graph from MongoDB (Phase 6 critical integration)."""
+    global orchestrator, route_optimizer, convergence_engine, yield_engine, learning_engine
+    
+    if orchestrator:
+        try:
+            await orchestrator.initialize_graph()
+            logging.info("✓ Chemical graph initialized from MongoDB")
+        except Exception as e:
+            logging.error(f"✗ Chemical graph init failed: {str(e)}")
+    
+    # Initialize route optimizer with constraints engine and equipment recommender
+    try:
+        route_optimizer = RouteOptimizer(
+            constraints_engine=constraints_engine,
+            equipment_recommender=equipment_recommender
+        )
+        convergence_engine = ConvergenceEngine(
+            route_optimizer=route_optimizer,
+            constraints_engine=constraints_engine
+        )
+        yield_engine = YieldOptimizationEngine(
+            constraints_engine=constraints_engine
+        )
+        learning_engine = ClosedLoopLearningEngine(
+            db=db,
+            retrain_threshold=int(os.getenv("FEEDBACK_RETRAIN_THRESHOLD", "25"))
+        )
+        logging.info("✓ Route optimizer + convergence + yield + closed-loop learning initialized")
+    except Exception as e:
+        logging.error(f"✗ Route optimizer init failed: {str(e)}")
+        route_optimizer = RouteOptimizer()
+        convergence_engine = ConvergenceEngine(route_optimizer=route_optimizer)
+        yield_engine = YieldOptimizationEngine()
+        learning_engine = ClosedLoopLearningEngine(db=db)
+
 # ============ CHEMISTRY SYNTHESIS ENDPOINTS ============
 
 @api_router.post("/synthesis/plan", response_model=SynthesisResponse)
-async def plan_synthesis(request: SynthesisRequest):
+async def plan_synthesis(
+    request: SynthesisRequest, 
+    use_advanced: bool = False, 
+    scale: str = "lab", 
+    batch_size_kg: float = 0.1,
+    pharma_mode: bool = False,  # Phase 5: Pharma yield enforcement
+    use_mcts: bool = False  # Phase 6: MCTS global optimization
+):
     """
     Plan synthesis routes for a target molecule.
     
-    Returns multiple routes ranked by yield, cost, and complexity.
+    **Parameters:**
+    - `use_advanced` (bool): Use advanced planning with retrosynthesis, ML, scale optimization, and cost modeling
+    - `scale` (str): Target scale - "lab", "pilot", or "industrial" (only for use_advanced=True)
+    - `batch_size_kg` (float): Batch size in kg (only for use_advanced=True)
+    - `pharma_mode` (bool): Enforce pharma-grade ≥99% yield requirement (Phase 5)
+    - `use_mcts` (bool): Use MCTS for global route optimization instead of beam search (Phase 6)
+    
+    **Returns:**
+    - Basic mode: Multiple routes from Claude ranked by yield, cost, and complexity
+    - Advanced mode: 5 optimized routes with full ML predictions, scale optimization, and industrial cost analysis
+    - Pharma mode: Only routes with ≥99% yield, optimized for cost via multi-step routes
+    - MCTS mode: Global optimization using Monte Carlo Tree Search on chemical graph
     """
     global orchestrator
     
-    # Initialize orchestrator if not done
+    # Initialize orchestrator if not done (Phase 6: with database)
     if orchestrator is None:
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
@@ -123,10 +194,23 @@ async def plan_synthesis(request: SynthesisRequest):
                 status_code=500,
                 detail="ANTHROPIC_API_KEY not configured. Please add it to environment variables."
             )
-        orchestrator = SynthesisPlanningOrchestrator(api_key=api_key)
+        orchestrator = SynthesisPlanningOrchestrator(api_key=api_key, db=db)  # Phase 6: Pass db
     
     try:
-        result = await orchestrator.plan_synthesis(request)
+        # Route to advanced or basic planning
+        if use_advanced:
+            logger.info(f"using_advanced_synthesis_planning: scale={scale}, batch={batch_size_kg}kg, mcts={use_mcts}, pharma={pharma_mode}")
+            result = await orchestrator.plan_synthesis_advanced(
+                request=request,
+                num_routes=5,
+                scale=scale,
+                batch_size_kg=batch_size_kg,
+                use_mcts=use_mcts,  # Phase 6
+                pharma_mode=pharma_mode  # Phase 5
+            )
+        else:
+            logger.info("using_basic_synthesis_planning")
+            result = await orchestrator.plan_synthesis(request)
         
         # Store in MongoDB for history
         doc = result.model_dump()
@@ -167,6 +251,8 @@ async def analyze_molecule(request: MoleculeValidationRequest):
             raise HTTPException(status_code=400, detail=analysis.get("error"))
         
         return analysis
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -236,7 +322,7 @@ async def predict_conditions(request: ConditionPredictionRequest):
             'reaction_type': request.reaction_type or 'unknown'
         }
         
-        conditions = condition_predictor.predict_conditions(reaction_dict)
+        conditions = condition_predictor.predict_safe(reaction_dict)
         
         return {
             'status': 'success',
@@ -258,22 +344,42 @@ async def compare_routes(request: RouteComparisonRequest):
     """
     Compare multiple synthesis routes using ML-powered scoring.
     
+    Bug Fix 4 & 5: Improved validation and error messages.
+    
+    Required fields in each route:
+    - target_molecule: {smiles: str} 
+    - starting_materials: [{smiles: str}]
+    - steps: [{reactants: [...], product: {...}, reaction_type: str, estimated_yield_percent: float}]
+    - overall_yield_percent: float
+    - total_cost_usd: float
+    - total_time_hours: float
+    - score: float
+    
     Returns routes ranked by score with detailed metrics.
     """
     try:
         from models.chemistry import SynthesisRoute
         
-        # Convert dict routes to SynthesisRoute objects
+        # Convert dict routes to SynthesisRoute objects with better error handling
         route_objects = []
-        for route_data in request.routes:
+        errors = []
+        
+        for idx, route_data in enumerate(request.routes):
             try:
+                # Validate required fields before attempting conversion
+                if 'target_molecule' not in route_data:
+                    errors.append(f"Route {idx}: Missing required field 'target_molecule'")
+                    continue
+                
                 route = SynthesisRoute(**route_data)
                 route_objects.append(route)
-            except:
+            except Exception as e:
+                errors.append(f"Route {idx}: {str(e)}")
                 continue
         
         if not route_objects:
-            raise HTTPException(status_code=400, detail="No valid routes provided")
+            error_detail = "No valid routes provided. " + " | ".join(errors[:3])
+            raise HTTPException(status_code=400, detail=error_detail)
         
         # Score routes
         scored_routes = route_scorer.compare_routes(route_objects, request.optimize_for)
@@ -363,134 +469,624 @@ async def recommend_equipment(request: EquipmentRequest):
         logging.error(f"Equipment recommendation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============ FEEDBACK LOOP ENDPOINT ============
 
-class FeedbackRequest(BaseModel):
-    request_id: Optional[str] = None
+
+# ============ PHASE 4: ADVANCED MODULE ENDPOINTS ============
+
+class RetrosynthesisRequest(BaseModel):
     target_smiles: str
-    predicted_yield: Optional[float] = None
-    actual_yield: Optional[float] = None
-    predicted_temperature: Optional[float] = None
-    actual_temperature: Optional[float] = None
-    predicted_conditions: Optional[Dict[str, Any]] = None
-    actual_conditions: Optional[Dict[str, Any]] = None
-    success: bool
-    notes: Optional[str] = None
+    max_depth: int = 5
+    max_routes: int = 5
+
+@api_router.post("/retrosynthesis/plan")
+async def plan_retrosynthesis(request: RetrosynthesisRequest):
+    """
+    Generate retrosynthesis routes using tree-based search.
+    
+    Returns multiple disconnection strategies ranked by feasibility.
+    """
+    try:
+        from services.retrosynthesis_engine import RetrosynthesisEngine
+        
+        engine = RetrosynthesisEngine()
+        
+        routes = engine.search_routes(
+            target_smiles=request.target_smiles,
+            max_depth=request.max_depth,
+            max_routes=request.max_routes,
+            beam_width=5
+        )
+        
+        return {
+            'status': 'success',
+            'target_smiles': request.target_smiles,
+            'num_routes': len(routes),
+            'routes': routes
+        }
+        
+    except Exception as e:
+        logging.error(f"Retrosynthesis planning failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ScaleOptimizationRequest(BaseModel):
+    reaction: Dict[str, Any]
+    target_scale: str = "lab"  # "lab", "pilot", or "industrial"
+    batch_size_kg: float = 0.1
+
+@api_router.post("/scale/optimize")
+async def optimize_for_scale(request: ScaleOptimizationRequest):
+    """
+    Optimize reaction parameters for specific production scale.
+    
+    Returns scale-adjusted conditions, yield predictions, and recommendations.
+    """
+    try:
+        from services.scale_aware_optimizer import ScaleAwareOptimizer
+        
+        optimizer = ScaleAwareOptimizer()
+        
+        # Validate scale
+        if request.target_scale not in ['lab', 'pilot', 'industrial']:
+            raise HTTPException(
+                status_code=400,
+                detail="target_scale must be 'lab', 'pilot', or 'industrial'"
+            )
+        
+        result = optimizer.optimize_for_scale(
+            reaction=request.reaction,
+            target_scale=request.target_scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'optimization': result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Scale optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IndustrialCostRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+    include_recovery: bool = False
+
+
+
+# ============ PHASE 5: PROCESS CONSTRAINTS ENDPOINT ============
+
+class ProcessConstraintsRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+
+@api_router.post("/constraints/evaluate")
+async def evaluate_process_constraints(request: ProcessConstraintsRequest):
+    """
+    Evaluate physical realism and process constraints for a reaction.
+    
+    Returns thermal, mixing, mass transfer, safety, and purification analysis
+    with actionable recommendations.
+    """
+    try:
+        from services.process_constraints_engine import ProcessConstraintsEngine
+        
+        engine = ProcessConstraintsEngine()
+        
+        constraints = engine.evaluate_reaction_constraints(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'scale': request.scale,
+            'batch_size_kg': request.batch_size_kg,
+            'constraints': {
+                'heat_risk': constraints.heat_risk,
+                'heat_score': constraints.heat_score,
+                'mixing_efficiency': constraints.mixing_efficiency,
+                'mixing_score': constraints.mixing_score,
+                'mass_transfer': constraints.mass_transfer,
+                'mass_transfer_score': constraints.mass_transfer_score,
+                'safety_risk': constraints.safety_risk,
+                'safety_score': constraints.safety_score,
+                'purification_difficulty': constraints.purification_difficulty,
+                'purification_score': constraints.purification_score,
+                'phase_complexity': constraints.phase_complexity,
+                'total_penalty': constraints.total_penalty
+            },
+            'recommendations': constraints.recommendations,
+            'equipment_requirements': constraints.equipment_requirements
+        }
+        
+    except Exception as e:
+        logging.error(f"Process constraints evaluation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/cost/industrial")
+async def calculate_industrial_cost(request: IndustrialCostRequest):
+    """
+    Calculate comprehensive industrial cost including reagents, energy, labor, equipment, and waste.
+    
+    Returns detailed cost breakdown with recovery savings if enabled.
+    """
+    try:
+        from services.advanced_cost_model import AdvancedCostModel
+        
+        cost_model = AdvancedCostModel()
+        
+        costs = cost_model.calculate_total_cost(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg,
+            include_recovery=request.include_recovery
+        )
+        
+        return {
+            'status': 'success',
+            'scale': request.scale,
+            'batch_size_kg': request.batch_size_kg,
+            'costs': costs
+        }
+        
+    except Exception as e:
+        logging.error(f"Industrial cost calculation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ PHASE 6 OPTIMIZATION LAYER ENDPOINTS ============
+
+class RouteMutationRequest(BaseModel):
+    route: Dict[str, Any]
+    mutation_types: Optional[List[str]] = None  # ["catalyst_swap", "solvent_optimization", "temperature_tune", "all"]
+
+class ConstraintFeedbackRequest(BaseModel):
+    reaction: Dict[str, Any]
+    scale: str = "lab"
+    batch_size_kg: float = 0.1
+
+class ConfidenceScoreRequest(BaseModel):
+    route: Dict[str, Any]
+    mcts_visits: int = 0
+
+class EquipmentFeasibilityRequest(BaseModel):
+    route: Dict[str, Any]
+
+class FullOptimizationRequest(BaseModel):
+    route: Dict[str, Any]
+    apply_mutations: bool = True
+    check_constraints: bool = True
+    calculate_confidence: bool = True
+    check_equipment: bool = True
+    mutation_types: Optional[List[str]] = None
+
+
+class IterativeOptimizationRequest(BaseModel):
+    routes: List[Dict[str, Any]]
+    objective: str = "balanced"  # "pharma", "cost", "green", "speed", "balanced"
+    optimization_iterations: int = 3
+    top_k: int = 5
+    early_stop_threshold: float = 0.5
+    pharma_mode: bool = False
+
+
+class YieldOptimizationRequest(BaseModel):
+    route: Dict[str, Any]
+    pharma_mode: bool = False
+    max_iterations: int = 5
+    target_yield: float = 0.99
+
+class FeedbackIngestionRequest(BaseModel):
+    predicted_route_id: Optional[str] = None
+    actual_yield_percent: float
+    actual_temperature_c: Optional[float] = None
+    actual_time_hours: Optional[float] = None
+    failures: List[str] = []
+    deviations: List[str] = []
+    equipment_performance: Dict[str, Any] = {}
+    mutation_history: List[Any] = []
+    source: str = "manual"  # manual | lab | industrial | simulated
+    verified: Optional[bool] = None
+    timestamp: Optional[str] = None
+
+
+class RetrainRequest(BaseModel):
+    reason: str = "manual"
+
+
+@api_router.post("/routes/mutate")
+async def mutate_route(request: RouteMutationRequest):
+    """
+    Apply route mutations: catalyst swapping, solvent optimization, temperature tuning.
+    
+    Returns the mutated route with improvement tracking.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        mutated = route_optimizer.mutate_route(
+            route=request.route,
+            mutation_types=request.mutation_types
+        )
+        
+        return {
+            'status': 'success',
+            'original_route': request.route,
+            'mutated_route': mutated,
+            'mutations_applied': mutated.get('mutations_applied', []),
+            'mutation_count': mutated.get('mutation_count', 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Route mutation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/constraint-feedback")
+async def constraint_feedback(request: ConstraintFeedbackRequest):
+    """
+    Evaluate constraints and auto-fix issues.
+    
+    If heat_risk=high → reduce temperature
+    If mixing_issue → change solvent
+    If safety_risk=high → reduce batch size
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        feedback = route_optimizer.apply_constraint_feedback(
+            reaction=request.reaction,
+            scale=request.scale,
+            batch_size_kg=request.batch_size_kg
+        )
+        
+        return {
+            'status': 'success',
+            'original_constraints': feedback.original_constraints,
+            'applied_fixes': feedback.applied_fixes,
+            'improved_constraints': feedback.improved_constraints,
+            'improvement_summary': feedback.improvement_summary,
+            'num_fixes': len(feedback.applied_fixes)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Constraint feedback failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/confidence")
+async def calculate_confidence(request: ConfidenceScoreRequest):
+    """
+    Calculate route confidence/reliability score with risk assessment.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        confidence = route_optimizer.calculate_confidence(
+            route=request.route,
+            mcts_visits=request.mcts_visits
+        )
+        
+        return {
+            'status': 'success',
+            'overall_confidence': confidence.overall_confidence,
+            'yield_confidence': confidence.yield_confidence,
+            'cost_confidence': confidence.cost_confidence,
+            'safety_confidence': confidence.safety_confidence,
+            'equipment_feasibility': confidence.equipment_feasibility,
+            'risk_level': confidence.risk_level,
+            'risk_factors': confidence.risk_factors,
+            'reliability_breakdown': confidence.reliability_breakdown
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Confidence calculation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/equipment-check")
+async def check_equipment(request: EquipmentFeasibilityRequest):
+    """
+    Check if route steps can be executed with available equipment.
+    Hard constraints: reject if equipment unavailable.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        feasibility = route_optimizer.check_equipment_feasibility(
+            route=request.route
+        )
+        
+        return {
+            'status': 'success',
+            **feasibility
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Equipment check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/optimize")
+async def full_route_optimization(request: FullOptimizationRequest):
+    """
+    Full optimization pipeline: mutations + constraint feedback + confidence + equipment check.
+    
+    Runs the complete optimization layer on a route.
+    """
+    try:
+        if not route_optimizer:
+            raise HTTPException(status_code=503, detail="Route optimizer not initialized")
+        
+        result = {
+            'status': 'success',
+            'original_route': request.route,
+        }
+        
+        current_route = request.route
+        
+        # 1. Apply mutations
+        if request.apply_mutations:
+            mutated = route_optimizer.mutate_route(current_route, request.mutation_types)
+            result['mutations'] = {
+                'applied': mutated.get('mutations_applied', []),
+                'count': mutated.get('mutation_count', 0)
+            }
+            current_route = mutated
+        
+        # 2. Constraint feedback
+        if request.check_constraints:
+            steps = current_route.get('steps', [])
+            if steps and isinstance(steps[0], dict):
+                reaction = steps[0].get('conditions', steps[0])
+            else:
+                reaction = current_route
+            
+            feedback = route_optimizer.apply_constraint_feedback(reaction)
+            result['constraint_feedback'] = {
+                'original': feedback.original_constraints,
+                'fixes': feedback.applied_fixes,
+                'improved': feedback.improved_constraints,
+                'summary': feedback.improvement_summary
+            }
+        
+        # 3. Confidence scoring
+        if request.calculate_confidence:
+            confidence = route_optimizer.calculate_confidence(current_route)
+            result['confidence'] = {
+                'overall': confidence.overall_confidence,
+                'risk_level': confidence.risk_level,
+                'risk_factors': confidence.risk_factors,
+                'breakdown': {
+                    'yield': confidence.yield_confidence,
+                    'cost': confidence.cost_confidence,
+                    'safety': confidence.safety_confidence,
+                    'equipment': confidence.equipment_feasibility
+                }
+            }
+        
+        # 4. Equipment binding
+        if request.check_equipment:
+            feasibility = route_optimizer.check_equipment_feasibility(current_route)
+            result['equipment'] = feasibility
+        
+        result['optimized_route'] = current_route
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Full optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/iterative-optimize")
+async def iterative_optimization(request: IterativeOptimizationRequest):
+    """
+    Phase 7: Iterative Optimization Convergence Loop.
+    
+    Runs: search → improve → re-search → converge → best possible route
+    
+    Supports objectives: pharma, cost, green, speed, balanced
+    Includes early stopping, pharma mode, and improvement tracking.
+    """
+    try:
+        if not convergence_engine:
+            raise HTTPException(status_code=503, detail="Convergence engine not initialized")
+        
+        if not request.routes:
+            raise HTTPException(status_code=400, detail="At least one route required")
+        
+        result = convergence_engine.optimize(
+            routes=request.routes,
+            objective=request.objective,
+            max_iterations=request.optimization_iterations,
+            top_k=request.top_k,
+            early_stop_threshold=request.early_stop_threshold,
+            pharma_mode=request.pharma_mode,
+        )
+        
+        return {
+            'status': result.status,
+            'objective': result.objective,
+            'pharma_mode': result.pharma_mode,
+            'total_iterations': result.total_iterations,
+            'total_improvement': result.total_improvement,
+            'initial_score': result.initial_score,
+            'final_score': result.final_score,
+            'early_stopped': result.early_stopped,
+            'early_stop_reason': result.early_stop_reason,
+            'convergence_history': result.convergence_history,
+            'best_routes': result.best_routes,
+            'total_duration_ms': result.total_duration_ms,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Iterative optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/routes/yield-optimize")
+async def yield_optimization(request: YieldOptimizationRequest):
+    """
+    Phase 8: Yield Optimization Engine.
+    
+    Engineers yield to target (default 99%), doesn't just predict it.
+    
+    Features:
+    - Iterative yield-driven mutation loop
+    - Multi-step yield collapse fix (Y = y1 × y2 × y3)
+    - Loss-based cost (low yield = expensive)
+    - Yield-dominant scoring (yield^5 - cost - penalty)
+    - Pharma mode hard constraint (reject <99%)
+    """
+    try:
+        if not yield_engine:
+            raise HTTPException(status_code=503, detail="Yield optimization engine not initialized")
+        
+        result = yield_engine.optimize_for_yield(
+            route=request.route,
+            pharma_mode=request.pharma_mode,
+            max_iterations=request.max_iterations,
+            target_yield=request.target_yield,
+        )
+        
+        return {
+            'status': result.status,
+            'target_yield': result.target_yield,
+            'initial_yield': result.initial_yield,
+            'final_yield': result.final_yield,
+            'yield_improvement': result.yield_improvement,
+            'yield_improvement_pct': round(result.yield_improvement * 100, 2),
+            'iterations_used': result.iterations_used,
+            'step_yields': result.step_yields,
+            'yield_bottleneck_step': result.yield_bottleneck_step,
+            'cost_analysis': {
+                'initial_cost': result.initial_cost,
+                'final_cost': result.final_cost,
+                'loss_cost_initial': result.loss_cost_initial,
+                'loss_cost_final': result.loss_cost_final,
+                'cost_saving_from_yield': result.cost_saving_from_yield,
+            },
+            'scoring': {
+                'initial_score': result.initial_score,
+                'final_score': result.final_score,
+                'score_formula': 'yield^5 × 100 - cost_penalty - constraint_penalty - equipment_penalty',
+            },
+            'optimization_history': result.optimization_history,
+            'optimized_route': result.optimized_route,
+            'pharma_mode': result.pharma_mode,
+            'pharma_compliant': result.pharma_compliant,
+            'duration_ms': result.duration_ms,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Yield optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @api_router.post("/feedback")
-async def submit_feedback(request: FeedbackRequest):
-    """
-    Submit feedback on predicted vs actual results.
-    
-    Stores predicted vs actual yield, conditions, and success/failure.
-    Used to track model accuracy and enable future learning.
-    """
+async def ingest_feedback(request: FeedbackIngestionRequest):
+    """Phase 10: Ingest real-world process feedback for closed-loop learning."""
     try:
-        doc = request.model_dump()
-        doc["feedback_id"] = str(uuid.uuid4())
-        doc["timestamp"] = datetime.now(timezone.utc).isoformat()
-        
-        # Calculate errors if both predicted and actual provided
-        if request.predicted_yield is not None and request.actual_yield is not None:
-            doc["yield_error"] = abs(request.predicted_yield - request.actual_yield)
-        
-        if request.predicted_temperature is not None and request.actual_temperature is not None:
-            doc["temperature_error"] = abs(request.predicted_temperature - request.actual_temperature)
-        
-        await db.feedback.insert_one(doc)
-        
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+
+        result = await learning_engine.ingest_feedback(request.model_dump())
+
+        # Push learned mutation priorities into adaptive yield optimizer
+        priorities = await learning_engine.mutation_priorities()
+        if yield_engine and priorities:
+            yield_engine.set_mutation_priorities(priorities)
+
         return {
             "status": "success",
-            "feedback_id": doc["feedback_id"],
-            "message": "Feedback recorded. Thank you for helping improve predictions."
+            "feedback_id": result.feedback_id,
+            "verified": result.verified,
+            "outlier_score": result.outlier_score,
+            "retrain_triggered": result.retrain_triggered,
+            "model_versions": result.model_versions,
+            "mutation_priorities": priorities,
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Feedback submission failed: {str(e)}")
+        logging.error(f"Feedback ingestion failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/feedback/stats")
-async def get_feedback_stats():
-    """Get summary statistics from the feedback database."""
+
+@api_router.post("/models/retrain")
+async def retrain_models(request: RetrainRequest):
+    """Phase 10: Manual model retraining trigger with version bump."""
     try:
-        total = await db.feedback.count_documents({})
-        successful = await db.feedback.count_documents({"success": True})
-        
-        # Compute yield MAE from feedback entries that have yield_error
-        yield_errors = []
-        temp_errors = []
-        
-        async for doc in db.feedback.find({"yield_error": {"$exists": True}}, {"_id": 0, "yield_error": 1}):
-            yield_errors.append(doc["yield_error"])
-        
-        async for doc in db.feedback.find({"temperature_error": {"$exists": True}}, {"_id": 0, "temperature_error": 1}):
-            temp_errors.append(doc["temperature_error"])
-        
-        yield_mae = round(sum(yield_errors) / len(yield_errors), 2) if yield_errors else None
-        temp_mae = round(sum(temp_errors) / len(temp_errors), 2) if temp_errors else None
-        success_rate = round(successful / total * 100, 1) if total > 0 else None
-        
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+        versions = await learning_engine.trigger_retraining(reason=request.reason)
+        return {"status": "success", "versions": versions}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Manual retraining failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/learning/status")
+async def learning_status():
+    """Phase 10: Closed-loop learning status and memory diagnostics."""
+    try:
+        if not learning_engine:
+            raise HTTPException(status_code=503, detail="Learning engine not initialized")
+
+        total_feedback = await db.feedback.count_documents({})
+        verified_feedback = await db.feedback.count_documents({"verified": True})
+        mutation_priorities = await learning_engine.mutation_priorities()
+        latest_versions = {}
+        for model in learning_engine.model_names:
+            latest = await db.model_versions.find_one({"model": model}, sort=[("created_at", -1)])
+            latest_versions[model] = latest["version"] if latest else "v0"
+
         return {
             "status": "success",
-            "total_feedback": total,
-            "successful_reactions": successful,
-            "success_rate_percent": success_rate,
-            "yield_prediction_mae": yield_mae,
-            "temperature_prediction_mae_celsius": temp_mae,
-            "yield_samples": len(yield_errors),
-            "temperature_samples": len(temp_errors)
+            "feedback": {
+                "total": total_feedback,
+                "verified": verified_feedback,
+                "retrain_threshold": learning_engine.retrain_threshold,
+            },
+            "models": latest_versions,
+            "mutation_priorities": mutation_priorities,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Feedback stats failed: {str(e)}")
+        logging.error(f"Learning status failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============ VALIDATION METRICS ENDPOINT ============
-
-# In-memory latency tracker (resets on restart)
-_latency_log: List[float] = []
-
-@api_router.get("/metrics/validation")
-async def get_validation_metrics():
-    """
-    Returns live validation and performance metrics.
-    
-    Tracks:
-    - Yield prediction error (MAE from feedback)
-    - Temperature prediction error (MAE from feedback)
-    - API latency stats
-    - Route success rate
-    - Total synthesis plans generated
-    """
-    try:
-        # Feedback-derived metrics
-        feedback_stats = await get_feedback_stats()
-        
-        # Synthesis history stats
-        total_plans = await db.synthesis_plans.count_documents({})
-        
-        # Latency stats
-        latency_stats = {}
-        if _latency_log:
-            latency_stats = {
-                "avg_ms": round(sum(_latency_log) / len(_latency_log), 1),
-                "min_ms": round(min(_latency_log), 1),
-                "max_ms": round(max(_latency_log), 1),
-                "samples": len(_latency_log)
-            }
-        
-        return {
-            "status": "success",
-            "metrics": {
-                "yield_prediction_mae": feedback_stats.get("yield_prediction_mae"),
-                "temperature_prediction_mae_celsius": feedback_stats.get("temperature_prediction_mae_celsius"),
-                "route_success_rate_percent": feedback_stats.get("success_rate_percent"),
-                "total_feedback_entries": feedback_stats.get("total_feedback"),
-                "total_synthesis_plans": total_plans,
-                "api_latency": latency_stats if latency_stats else "No latency data yet",
-            }
-        }
-    except Exception as e:
-        logging.error(f"Metrics endpoint failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # Include the router in the main app
 app.include_router(api_router)

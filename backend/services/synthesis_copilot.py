@@ -64,16 +64,17 @@ class SynthesisCopilot:
         """Parse user intent from natural language query."""
         query_lower = query.lower()
         
-        # Cost optimization intents
-        if any(word in query_lower for word in ['reduce cost', 'cheaper', 'lower cost', 'save money']):
+        # Bug Fix 2: Improved intent parsing with flexible matching for natural language
+        # Cost optimization intents - match variations like "how can I reduce the cost?"
+        if any(word in query_lower for word in ['reduce cost', 'reduce the cost', 'cheaper', 'lower cost', 'lower the cost', 'save money', 'cut cost', 'decrease cost']):
             return {'action': 'reduce_cost', 'priority': 'high'}
         
         # Yield optimization intents
-        if any(word in query_lower for word in ['increase yield', 'higher yield', 'better yield', 'improve yield']):
+        if any(word in query_lower for word in ['increase yield', 'increase the yield', 'higher yield', 'better yield', 'improve yield', 'improve the yield', 'boost yield', 'maximize yield']):
             return {'action': 'increase_yield', 'priority': 'high'}
         
         # Speed/steps optimization
-        if any(word in query_lower for word in ['faster', 'quicker', 'fewer steps', 'less steps', 'reduce time']):
+        if any(word in query_lower for word in ['faster', 'quicker', 'fewer steps', 'less steps', 'reduce time', 'reduce the time', 'speed up', 'make it faster']):
             return {'action': 'reduce_steps', 'priority': 'high'}
         
         # Prediction queries
