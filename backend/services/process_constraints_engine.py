@@ -5,6 +5,26 @@ Evaluates reaction steps based on chemical engineering constraints to ensure
 physically feasible, safe, and industrially scalable synthesis routes.
 """
 
+# FIELD_REFERENCE: expected reaction dict keys consumed by ProcessConstraintsEngine
+# -------------------------------------------------------------------------------
+# Required/primary (with defaults if missing):
+# - temperature_c (float): reaction temperature in °C
+# - time_hours (float): reaction duration in hours
+# - catalyst (str): catalyst identifier/name
+# - solvent (str): solvent identifier/name
+# - pressure_atm (float): operating pressure in atm
+#
+# Additional contextual keys used in scoring:
+# - reaction_type (str): used for exotherm/runaway heuristics
+# - phase_type (str): single, gas-liquid, liquid-liquid, solid-liquid
+# - reactants (list): safety heuristics
+# - products (list): purification scoring
+# - yield_percent (float): purification difficulty adjustments
+#
+# NOTE:
+# Upstream route/LLM payloads may use aliases such as temperature_celsius/time_hours.
+# These should be normalized before constraint evaluation to avoid silent defaults.
+
 import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
