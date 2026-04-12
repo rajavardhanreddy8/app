@@ -11,6 +11,7 @@ import logging
 from typing import Dict, List, Set, Optional, Tuple
 from collections import defaultdict
 import networkx as nx
+from data.building_blocks import is_building_block_smiles
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +152,8 @@ class ChemicalGraph:
         building_blocks = set()
         
         for node in self.graph.nodes():
-            # Check if terminal node (no predecessors = commercial)
-            if self.graph.in_degree(node) == 0:
+            # Check if terminal node OR known commercial catalog entry.
+            if self.graph.in_degree(node) == 0 or is_building_block_smiles(node):
                 building_blocks.add(node)
             
             # Also check cost (if available)
@@ -189,8 +190,9 @@ class ChemicalGraph:
     
     def is_commercial(self, molecule: str) -> bool:
         """Check if molecule is a commercial building block."""
-        # Heuristic: No predecessors = commercial
-        return self.graph.in_degree(molecule) == 0 if self.graph.has_node(molecule) else False
+        if not self.graph.has_node(molecule):
+            return is_building_block_smiles(molecule)
+        return self.graph.in_degree(molecule) == 0 or is_building_block_smiles(molecule)
     
     def get_graph_stats(self) -> Dict:
         """Get graph statistics for analysis."""

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import logging
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from sklearn.model_selection import train_test_split
@@ -128,26 +129,51 @@ class YieldPredictor:
             return None
     
     async def prepare_training_data(self) -> tuple:
-        """Load reactions from database and prepare training data."""
-        logger.info("Loading reactions from database...")
-        
-        db = ReactionDatabase()
-        reactions = await db.get_reactions_with_yield(min_yield=0, limit=10000)
-        
-        logger.info(f"Loaded {len(reactions)} reactions with yield data")
+        """Load reactions from local file + database and prepare training data."""
+        training_path = Path(__file__).resolve().parents[1] / "data" / "training_reactions.json"
+        file_reactions: List[Dict[str, Any]] = []
+        db_reactions: List[Dict[str, Any]] = []
+
+        if training_path.exists():
+            try:
+                with open(training_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    file_reactions = loaded
+                logger.info(f"Loaded {len(file_reactions)} reactions from {training_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load training file {training_path}: {e}")
+
+        try:
+            logger.info("Loading reactions from database...")
+            db = ReactionDatabase()
+            db_reactions = await db.get_reactions_with_yield(min_yield=0, limit=10000)
+            logger.info(f"Loaded {len(db_reactions)} reactions from MongoDB")
+        except Exception as e:
+            logger.warning(f"Failed to load reactions from MongoDB: {e}")
+
+        reactions = file_reactions + db_reactions
+        logger.info(
+            f"Training data sources: file={len(file_reactions)}, mongo={len(db_reactions)}, combined={len(reactions)}"
+        )
         
         X = []
         y = []
         
         for rxn in reactions:
             features = self.featurize_reaction(rxn)
-            if features is not None and rxn.get('yield_percent'):
+            yield_value = rxn.get('yield_percent', rxn.get('yield'))
+            if features is not None and yield_value is not None:
                 X.append(features)
-                y.append(rxn['yield_percent'])
-        
+                y.append(float(yield_value))
+
         X = np.array(X)
         y = np.array(y)
         
+        if len(X) == 0:
+            logger.warning("No valid training samples found")
+            return np.array([]), np.array([])
+
         logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features")
         
         return X, y
