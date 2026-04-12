@@ -149,7 +149,20 @@ class YieldOptimizationEngine:
         self.constraints_engine = constraints_engine
         self.target_yield = TARGET_YIELD
         self.max_iterations = 5
+        self.mutation_priority = {
+            "catalyst_upgrade": 1.0,
+            "solvent_upgrade": 1.0,
+            "temperature_fine_tune": 1.0,
+        }
     
+    def set_mutation_priorities(self, priorities: Dict[str, float]) -> None:
+        """Update adaptive mutation priorities from historical intelligence."""
+        if not priorities:
+            return
+        for key in ["catalyst_upgrade", "solvent_upgrade", "temperature_fine_tune"]:
+            if key in priorities:
+                self.mutation_priority[key] = max(0.1, float(priorities[key]))
+
     # ============ CORE: YIELD OPTIMIZATION LOOP ============
     
     def optimize_for_yield(
@@ -419,70 +432,60 @@ class YieldOptimizationEngine:
     def _mutate_for_yield(self, route: Dict, step_yields: List[Dict], current_yield: float) -> List[str]:
         """
         Apply yield-driven mutations.
-        
+
         Strategy:
-        - yield < 0.7: aggressive changes (catalyst + solvent + temperature)
-        - yield 0.7-0.9: moderate changes (catalyst + solvent)
-        - yield 0.9-0.95: targeted changes (catalyst OR temperature)
-        - yield 0.95-0.99: micro-adjustments (temperature fine-tune only)
+        - yield < 0.7: aggressive changes
+        - yield 0.7-0.9: moderate changes
+        - yield 0.9-0.95: targeted changes
+        - yield 0.95-0.99: micro-adjustments
+
+        Within each strategy, mutation order is adaptive from historical performance.
         """
         mutations = []
         steps = route.get('steps', [])
-        
+
+        mutation_ops = {
+            'catalyst_upgrade': self._upgrade_catalyst,
+            'solvent_upgrade': self._upgrade_solvent,
+            'temperature_fine_tune': self._optimize_temperature,
+        }
+
         for sy in step_yields:
             idx = sy["step"]
             step_yield = sy["yield"]
-            
+
             if idx >= len(steps):
                 continue
-            
+
             step = steps[idx]
             conditions = step.get('conditions', step)
-            
-            # Skip if step yield is already excellent
+
             if step_yield >= 0.99:
                 continue
-            
-            # === AGGRESSIVE: yield < 0.7 ===
+
             if step_yield < 0.70:
-                m1 = self._upgrade_catalyst(conditions, "aggressive")
-                if m1:
-                    mutations.append(f"step_{idx}: {m1}")
-                m2 = self._upgrade_solvent(conditions, "aggressive")
-                if m2:
-                    mutations.append(f"step_{idx}: {m2}")
-                m3 = self._optimize_temperature(conditions, "aggressive")
-                if m3:
-                    mutations.append(f"step_{idx}: {m3}")
-            
-            # === MODERATE: yield 0.7-0.9 ===
+                allowed = ['catalyst_upgrade', 'solvent_upgrade', 'temperature_fine_tune']
+                intensity = 'aggressive'
             elif step_yield < 0.90:
-                m1 = self._upgrade_catalyst(conditions, "moderate")
-                if m1:
-                    mutations.append(f"step_{idx}: {m1}")
-                m2 = self._upgrade_solvent(conditions, "moderate")
-                if m2:
-                    mutations.append(f"step_{idx}: {m2}")
-            
-            # === TARGETED: yield 0.9-0.95 ===
+                allowed = ['catalyst_upgrade', 'solvent_upgrade']
+                intensity = 'moderate'
             elif step_yield < STEP_YIELD_FLOOR:
-                # Only upgrade catalyst OR temperature, not both
-                m1 = self._upgrade_catalyst(conditions, "targeted")
-                if m1:
-                    mutations.append(f"step_{idx}: {m1}")
-                else:
-                    m3 = self._optimize_temperature(conditions, "targeted")
-                    if m3:
-                        mutations.append(f"step_{idx}: {m3}")
-            
-            # === MICRO: yield 0.95-0.99 ===
+                allowed = ['catalyst_upgrade', 'temperature_fine_tune']
+                intensity = 'targeted'
             else:
-                m3 = self._optimize_temperature(conditions, "micro")
-                if m3:
-                    mutations.append(f"step_{idx}: {m3}")
-        
+                allowed = ['temperature_fine_tune']
+                intensity = 'micro'
+
+            ordered = sorted(allowed, key=lambda k: self.mutation_priority.get(k, 1.0), reverse=True)
+            for mutation_name in ordered:
+                msg = mutation_ops[mutation_name](conditions, intensity)
+                if msg:
+                    mutations.append(f"step_{idx}: {msg}")
+                    if intensity == 'targeted':
+                        break
+
         return mutations
-    
+
     def _upgrade_catalyst(self, conditions: Dict, intensity: str) -> Optional[str]:
         """Upgrade catalyst for better yield."""
         current = conditions.get('catalyst', 'None')
@@ -596,7 +599,7 @@ class YieldOptimizationEngine:
     
     def _yield_dominant_score(self, route: Dict, total_yield: float = None) -> float:
         """
-        Yield-dominant scoring: score = yield^5 - cost_penalty - constraint_penalty
+        Yield-dominant scoring: score = yield^5 - cost_penalty - constraint_penalty - equipment_penalty
         
         yield^5 forces yield dominance:
         - 0.99^5 = 0.951 (excellent)
@@ -628,5 +631,9 @@ class YieldOptimizationEngine:
                     except Exception:
                         pass
         
-        score = yield_score - cost_penalty - constraint_penalty
+        equipment_penalty = route.get('equipment_penalty', 0.0)
+        if route.get('equipment_rejected', False):
+            equipment_penalty += 100.0
+
+        score = yield_score - cost_penalty - constraint_penalty - equipment_penalty
         return max(0, min(100, score))

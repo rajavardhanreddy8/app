@@ -1,6 +1,4 @@
 from typing import List, Dict, Any, Optional
-import json
-import re
 import logging
 from models.chemistry import (
     MolecularStructure, 
@@ -30,21 +28,6 @@ class SynthesisPlanner:
             "reduction": {"yield": 90, "difficulty": "easy", "cost_factor": 0.8},
             "oxidation": {"yield": 85, "difficulty": "moderate", "cost_factor": 1.0},
         }
-    
-    def parse_claude_response(self, response_text: str) -> Optional[Dict[str, Any]]:
-        """Parse Claude's JSON response."""
-        try:
-            # Try to find JSON in the response
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                json_str = json_match.group()
-                return json.loads(json_str)
-            else:
-                logger.warning("No JSON found in Claude response")
-                return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON: {str(e)}")
-            return None
     
     def calculate_route_score(
         self, 

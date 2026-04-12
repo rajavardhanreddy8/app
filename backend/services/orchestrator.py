@@ -14,6 +14,10 @@ from services.advanced_cost_model import AdvancedCostModel
 from services.yield_predictor import YieldPredictor
 from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
+from services.process_constraints_engine import ProcessConstraintsEngine
+from services.equipment_spec_engine import EquipmentSpecEngine
+from services.chemical_graph import ChemicalGraph
+from services.mcts_search import MCTSSearch
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +66,12 @@ class SynthesisPlanningOrchestrator:
         except Exception as e:
             logger.warning(f"ProcessConstraintsEngine init failed: {e}, using fallback")
             self.constraints_engine = None
+
+        try:
+            self.equipment_engine = EquipmentSpecEngine()
+        except Exception as e:
+            logger.warning(f"EquipmentSpecEngine init failed: {e}, using fallback")
+            self.equipment_engine = None
         
         # Phase 6: Chemical graph + MCTS (CRITICAL INTEGRATION)
         self.db = db
@@ -79,36 +89,42 @@ class SynthesisPlanningOrchestrator:
     async def initialize_graph(self):
         """
         Initialize chemical graph from MongoDB reactions.
-        
+
         CRITICAL: This must be called once on startup or before first MCTS search.
         """
         if self._graph_initialized or not self.db:
+            logger.info("graph_init_status", initialized=False, molecules=0, reactions=0)
             return
-        
+
+        molecules = 0
+        reactions_count = 0
+
         try:
             logger.info("initializing_chemical_graph_from_mongodb")
-            
-            # Load reactions from database
+
             reactions = await self.db.reactions.find({}, {"_id": 0}).to_list(2000)
-            logger.info(f"loaded_{len(reactions)}_reactions_from_db")
-            
-            # Build graph
+            reactions_count = len(reactions)
+            logger.info("loaded_reactions_from_db", reactions=reactions_count)
+
             self.chem_graph = ChemicalGraph()
             self.chem_graph.build_from_reactions(reactions)
-            
-            # Log stats
+
             stats = self.chem_graph.get_graph_stats()
-            logger.info(
-                f"chemical_graph_initialized: "
-                f"{stats['num_molecules']} molecules, "
-                f"{stats['num_reactions']} reactions"
-            )
-            
+            molecules = int(stats.get("num_molecules", 0))
+            reactions_count = int(stats.get("num_reactions", reactions_count))
             self._graph_initialized = True
-            
+
         except Exception as e:
-            logger.error(f"chemical_graph_init_failed: {str(e)}")
             self.chem_graph = None
+            self._graph_initialized = False
+            logger.error("chemical_graph_init_failed", error=str(e))
+
+        logger.info(
+            "graph_init_status",
+            initialized=bool(self._graph_initialized),
+            molecules=molecules,
+            reactions=reactions_count,
+        )
 
     async def _generate_routes_mcts(
         self,
@@ -118,17 +134,20 @@ class SynthesisPlanningOrchestrator:
     ) -> List[Dict]:
         """
         Generate routes using MCTS search (Phase 6).
-        
+
         Args:
             target_smiles: Target molecule
             num_routes: Number of routes to return
             pharma_mode: Pharma yield enforcement
-            
+
         Returns:
             List of route dicts from MCTS
         """
         try:
-            # Initialize MCTS engine if not done
+            if not self.chem_graph:
+                logger.error("mcts_search_failed", error="chemical graph unavailable")
+                return []
+
             if not self.mcts_engine or self.mcts_engine.pharma_mode != pharma_mode:
                 self.mcts_engine = MCTSSearch(
                     chemical_graph=self.chem_graph,
@@ -136,26 +155,25 @@ class SynthesisPlanningOrchestrator:
                     constraints_engine=self.constraints_engine,
                     pharma_mode=pharma_mode
                 )
-            
-            # Run MCTS search
+
             routes = self.mcts_engine.search(
                 target_molecule=target_smiles,
-                max_iterations=300,  # Tunable parameter
+                max_iterations=300,
                 max_depth=6
             )
-            
-            logger.info(f"mcts_generated_{len(routes)}_routes")
-            return routes
-            
+
+            logger.info("mcts_generated_routes", routes=len(routes), target_smiles=target_smiles)
+            return routes[:num_routes]
+
         except Exception as e:
-            logger.error(f"mcts_search_failed: {str(e)}, falling back to beam search")
-            # Fallback to beam search
-            return self.retrosynthesis_engine.search_routes(
+            logger.error(
+                "mcts_search_failed",
+                error=str(e),
                 target_smiles=target_smiles,
-                max_depth=6,
-                max_routes=num_routes,
-                beam_width=5
+                num_routes=num_routes,
+                pharma_mode=pharma_mode,
             )
+            return []
 
     async def plan_synthesis(self, request: SynthesisRequest) -> SynthesisResponse:
         """Complete synthesis planning workflow."""
@@ -182,11 +200,16 @@ class SynthesisPlanningOrchestrator:
             optimize_for=request.optimize_for
         )
         
-        # Step 3: Parse Claude's response
-        parsed_data = self.synthesis_planner.parse_claude_response(
-            claude_response["content"]
-        )
-        
+        # Step 3: Use structured Claude tool output
+        parsed_data = claude_response.get("structured_content")
+        if not parsed_data and claude_response.get("content"):
+            # Backward compatibility path (demo mode or legacy payload)
+            try:
+                import json
+                parsed_data = json.loads(claude_response["content"])
+            except Exception:
+                parsed_data = None
+
         # Step 4: Build structured synthesis routes
         routes = []
         if parsed_data:
@@ -300,11 +323,17 @@ class SynthesisPlanningOrchestrator:
                 
                 # Phase 5: Sub-step 3e: Evaluate process constraints
                 route_dict = self._evaluate_process_constraints(route_dict, scale, batch_size_kg)
+
+                # Phase 9: Sub-step 3f: Equipment-centric process design (hard feasibility)
+                route_dict = self._evaluate_equipment_feasibility(route_dict, scale, batch_size_kg)
+                if route_dict.get('equipment_rejected', False):
+                    logger.info(f"route_rejected_by_equipment_constraints_{idx+1}")
+                    continue
                 
-                # Sub-step 3f: Calculate industrial costs (with hybrid caching)
+                # Sub-step 3g: Calculate industrial costs (with hybrid caching)
                 route_dict = self._calculate_industrial_costs(route_dict, scale, batch_size_kg)
                 
-                # Sub-step 3g: Calculate composite score (includes constraint penalties)
+                # Sub-step 3h: Calculate composite score (includes constraint/equipment penalties)
                 route_dict['score'] = self._calculate_composite_score(
                     route_dict, 
                     request.optimize_for
@@ -482,16 +511,67 @@ class SynthesisPlanningOrchestrator:
         
         return route
     
-    def _calculate_industrial_costs(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
-        """Calculate industrial costs with hybrid caching."""
-        total_cost = 0.0
-        cost_breakdown = {
-            'reagent_cost': 0.0,
-            'energy_cost': 0.0,
-            'labor_cost': 0.0,
-            'equipment_cost': 0.0,
-            'waste_disposal_cost': 0.0
-        }
+    def _evaluate_equipment_feasibility(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
+        """Phase 9: Equipment feasibility + process flow generation as hard constraints."""
+        if not self.equipment_engine:
+            route['equipment_rejected'] = False
+            route['equipment_penalty'] = 0.0
+            return route
+
+        available_equipment = route.get('available_equipment', None)
+        total_penalty = 0.0
+        total_equipment_cost = 0.0
+        process_flow = []
+        route_specs = []
+        route_required = []
+
+        for step in route.get('steps', []):
+            conditions = step.get('predicted_conditions', {})
+            constraints = step.get('process_constraints', {})
+
+            reaction = {
+                'temperature_c': conditions.get('temperature_celsius', 25.0),
+                'pressure_atm': step.get('pressure_atm', 1.0),
+                'phase_type': step.get('phase_type', 'single'),
+                'density_kg_per_l': step.get('density_kg_per_l', 1.0),
+                'cp_kj_kg_k': step.get('cp_kj_kg_k', 4.0),
+                'delta_t_k': abs(conditions.get('temperature_celsius', 25.0) - 25.0),
+                'cooling_capacity_kw': step.get('cooling_capacity_kw', 25.0),
+            }
+
+            design = self.equipment_engine.design_process(
+                reaction=reaction,
+                available_equipment=available_equipment,
+                batch_mass_kg=batch_size_kg / max(route.get('num_steps', 1), 1),
+                constraint_penalty=constraints.get('total_penalty', 0.0),
+            )
+
+            step['equipment_design'] = {
+                'feasible': design.feasible,
+                'required_equipment': design.required_equipment,
+                'spec': design.equipment_spec,
+                'rejection_reasons': design.rejection_reasons,
+            }
+
+            if not design.feasible:
+                route['equipment_rejected'] = True
+                route['equipment_rejection_reasons'] = design.rejection_reasons
+                return route
+
+            total_penalty += design.equipment_penalty
+            total_equipment_cost += design.equipment_cost_usd
+            process_flow = design.process_flow
+            route_specs.append(design.equipment_spec)
+            route_required.extend(design.required_equipment)
+
+        route['equipment_rejected'] = False
+        route['process_flow'] = process_flow
+        route['equipment_specs'] = route_specs
+        route['required_equipment'] = sorted(set(route_required))
+        route['equipment_penalty'] = round(total_penalty / max(route.get('num_steps', 1), 1), 2)
+        route['equipment_cost_usd'] = round(total_equipment_cost, 2)
+
+        return route
 
     def _evaluate_process_constraints(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
         """
@@ -619,6 +699,8 @@ class SynthesisPlanningOrchestrator:
                 step['cost_breakdown'] = {'total_cost': 50.0}
                 total_cost += 50.0
         
+        total_cost += route.get('equipment_cost_usd', 0.0)
+        cost_breakdown['equipment_cost'] += route.get('equipment_cost_usd', 0.0)
         route['total_cost_usd'] = round(total_cost, 2)
         route['cost_breakdown'] = {k: round(v, 2) for k, v in cost_breakdown.items()}
         
@@ -644,26 +726,29 @@ class SynthesisPlanningOrchestrator:
         steps = route.get('num_steps', 3)
         step_score = max(0, 100 - (steps * 10))
         
-        # Phase 5: Constraint penalty (higher penalty = lower score)
+        # Phase 5/9: Constraint + equipment penalties (higher penalty = lower score)
         constraint_penalty = route.get('total_constraint_penalty', 0.0)
-        constraint_score = max(0, 100 - constraint_penalty)  # Direct penalty reduction
+        equipment_penalty = route.get('equipment_penalty', 0.0)
+        constraint_score = max(0, 100 - constraint_penalty)
+        equipment_score = max(0, 100 - equipment_penalty)
         
         # Weights based on optimization goal (Phase 5: added 10% for constraints)
         if optimize_for == 'yield':
-            weights = {'yield': 0.55, 'cost': 0.10, 'time': 0.05, 'steps': 0.15, 'constraints': 0.15}
+            weights = {'yield': 0.50, 'cost': 0.10, 'time': 0.05, 'steps': 0.10, 'constraints': 0.15, 'equipment': 0.10}
         elif optimize_for == 'cost':
-            weights = {'yield': 0.20, 'cost': 0.45, 'time': 0.05, 'steps': 0.15, 'constraints': 0.15}
+            weights = {'yield': 0.20, 'cost': 0.40, 'time': 0.05, 'steps': 0.10, 'constraints': 0.15, 'equipment': 0.10}
         elif optimize_for == 'time':
-            weights = {'yield': 0.20, 'cost': 0.10, 'time': 0.45, 'steps': 0.10, 'constraints': 0.15}
+            weights = {'yield': 0.20, 'cost': 0.10, 'time': 0.40, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10}
         else:  # balanced
-            weights = {'yield': 0.30, 'cost': 0.25, 'time': 0.15, 'steps': 0.15, 'constraints': 0.15}
+            weights = {'yield': 0.30, 'cost': 0.25, 'time': 0.15, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10}
         
         composite_score = (
             weights['yield'] * yield_score +
             weights['cost'] * cost_score +
             weights['time'] * time_score +
             weights['steps'] * step_score +
-            weights['constraints'] * constraint_score  # Phase 5: added
+            weights['constraints'] * constraint_score +
+            weights['equipment'] * equipment_score
         )
         
         return round(composite_score, 2)
