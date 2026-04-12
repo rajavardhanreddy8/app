@@ -6,7 +6,7 @@ import time
 from typing import Dict, Any, List, Optional
 from models.chemistry import SynthesisRequest, SynthesisResponse, SynthesisRoute
 from services.claude_service import ClaudeService
-from services.molecular_service import MolecularService  
+from services.molecular_service import MolecularService, normalize_reaction_fields  
 from services.synthesis_planner import SynthesisPlanner
 from services.retrosynthesis_engine import RetrosynthesisEngine
 from services.scale_aware_optimizer import ScaleAwareOptimizer
@@ -308,6 +308,12 @@ class SynthesisPlanningOrchestrator:
                 
                 # Phase 5: Sub-step 3e: Evaluate process constraints
                 route_dict = self._evaluate_process_constraints(route_dict, scale, batch_size_kg)
+                
+                # Optional convergence feedback pass (if convergence engine is wired in)
+                route_dict = self._apply_convergence_feedback_to_route(
+                    route_dict,
+                    request.optimize_for
+                )
 
                 # Phase 9: Sub-step 3f: Equipment-centric process design (hard feasibility)
                 route_dict = self._evaluate_equipment_feasibility(route_dict, scale, batch_size_kg)
@@ -471,6 +477,7 @@ class SynthesisPlanningOrchestrator:
                     'yield_percent': step.get('predicted_yield', 75.0),
                     'temperature_c': step.get('predicted_conditions', {}).get('temperature_celsius', 25.0)
                 }
+                reaction_dict = normalize_reaction_fields(reaction_dict)
                 
                 scale_adjustments = self.scale_optimizer.optimize_for_scale(
                     reaction_dict, scale, batch_size_kg
@@ -583,6 +590,7 @@ class SynthesisPlanningOrchestrator:
                     'yield_percent': step.get('scale_adjusted_yield', 75.0),
                     'phase_type': step.get('phase_type', 'single')
                 }
+                reaction_dict = normalize_reaction_fields(reaction_dict)
                 
                 # Evaluate constraints
                 constraints = self.constraints_engine.evaluate_reaction_constraints(
@@ -629,6 +637,22 @@ class SynthesisPlanningOrchestrator:
         logger.info(f"constraint_evaluation_complete: penalty={total_constraint_penalty:.1f}, recommendations={len(route['constraint_recommendations'])}")
         
         return route
+
+    def _apply_convergence_feedback_to_route(self, route: Dict, objective: str) -> Dict:
+        """
+        Apply convergence feedback with normalized step/reaction fields.
+
+        This delegates to convergence_engine._apply_constraint_feedback_to_route()
+        when a convergence engine is available.
+        """
+        convergence_engine = getattr(self, "convergence_engine", None)
+        if not convergence_engine:
+            return route
+
+        normalized_route = normalize_reaction_fields(route)
+        return convergence_engine._apply_constraint_feedback_to_route(
+            normalized_route, objective
+        )
     
     def _calculate_industrial_costs(self, route: Dict, scale: str, batch_size_kg: float) -> Dict:
         """Calculate industrial costs with hybrid caching."""

@@ -322,7 +322,7 @@ async def predict_conditions(request: ConditionPredictionRequest):
             'reaction_type': request.reaction_type or 'unknown'
         }
         
-        conditions = condition_predictor.predict_conditions(reaction_dict)
+        conditions = condition_predictor.predict_safe(reaction_dict)
         
         return {
             'status': 'success',
