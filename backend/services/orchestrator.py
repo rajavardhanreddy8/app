@@ -16,6 +16,8 @@ from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
 from services.process_constraints_engine import ProcessConstraintsEngine
 from services.equipment_spec_engine import EquipmentSpecEngine
+from services.chemical_graph import ChemicalGraph
+from services.mcts_search import MCTSSearch
 
 # Configure logging
 logging.basicConfig(
@@ -87,36 +89,42 @@ class SynthesisPlanningOrchestrator:
     async def initialize_graph(self):
         """
         Initialize chemical graph from MongoDB reactions.
-        
+
         CRITICAL: This must be called once on startup or before first MCTS search.
         """
         if self._graph_initialized or not self.db:
+            logger.info("graph_init_status", initialized=False, molecules=0, reactions=0)
             return
-        
+
+        molecules = 0
+        reactions_count = 0
+
         try:
             logger.info("initializing_chemical_graph_from_mongodb")
-            
-            # Load reactions from database
+
             reactions = await self.db.reactions.find({}, {"_id": 0}).to_list(2000)
-            logger.info(f"loaded_{len(reactions)}_reactions_from_db")
-            
-            # Build graph
+            reactions_count = len(reactions)
+            logger.info("loaded_reactions_from_db", reactions=reactions_count)
+
             self.chem_graph = ChemicalGraph()
             self.chem_graph.build_from_reactions(reactions)
-            
-            # Log stats
+
             stats = self.chem_graph.get_graph_stats()
-            logger.info(
-                f"chemical_graph_initialized: "
-                f"{stats['num_molecules']} molecules, "
-                f"{stats['num_reactions']} reactions"
-            )
-            
+            molecules = int(stats.get("num_molecules", 0))
+            reactions_count = int(stats.get("num_reactions", reactions_count))
             self._graph_initialized = True
-            
+
         except Exception as e:
-            logger.error(f"chemical_graph_init_failed: {str(e)}")
             self.chem_graph = None
+            self._graph_initialized = False
+            logger.error("chemical_graph_init_failed", error=str(e))
+
+        logger.info(
+            "graph_init_status",
+            initialized=bool(self._graph_initialized),
+            molecules=molecules,
+            reactions=reactions_count,
+        )
 
     async def _generate_routes_mcts(
         self,
@@ -126,17 +134,20 @@ class SynthesisPlanningOrchestrator:
     ) -> List[Dict]:
         """
         Generate routes using MCTS search (Phase 6).
-        
+
         Args:
             target_smiles: Target molecule
             num_routes: Number of routes to return
             pharma_mode: Pharma yield enforcement
-            
+
         Returns:
             List of route dicts from MCTS
         """
         try:
-            # Initialize MCTS engine if not done
+            if not self.chem_graph:
+                logger.error("mcts_search_failed", error="chemical graph unavailable")
+                return []
+
             if not self.mcts_engine or self.mcts_engine.pharma_mode != pharma_mode:
                 self.mcts_engine = MCTSSearch(
                     chemical_graph=self.chem_graph,
@@ -144,26 +155,25 @@ class SynthesisPlanningOrchestrator:
                     constraints_engine=self.constraints_engine,
                     pharma_mode=pharma_mode
                 )
-            
-            # Run MCTS search
+
             routes = self.mcts_engine.search(
                 target_molecule=target_smiles,
-                max_iterations=300,  # Tunable parameter
+                max_iterations=300,
                 max_depth=6
             )
-            
-            logger.info(f"mcts_generated_{len(routes)}_routes")
-            return routes
-            
+
+            logger.info("mcts_generated_routes", routes=len(routes), target_smiles=target_smiles)
+            return routes[:num_routes]
+
         except Exception as e:
-            logger.error(f"mcts_search_failed: {str(e)}, falling back to beam search")
-            # Fallback to beam search
-            return self.retrosynthesis_engine.search_routes(
+            logger.error(
+                "mcts_search_failed",
+                error=str(e),
                 target_smiles=target_smiles,
-                max_depth=6,
-                max_routes=num_routes,
-                beam_width=5
+                num_routes=num_routes,
+                pharma_mode=pharma_mode,
             )
+            return []
 
     async def plan_synthesis(self, request: SynthesisRequest) -> SynthesisResponse:
         """Complete synthesis planning workflow."""
@@ -190,11 +200,16 @@ class SynthesisPlanningOrchestrator:
             optimize_for=request.optimize_for
         )
         
-        # Step 3: Parse Claude's response
-        parsed_data = self.synthesis_planner.parse_claude_response(
-            claude_response["content"]
-        )
-        
+        # Step 3: Use structured Claude tool output
+        parsed_data = claude_response.get("structured_content")
+        if not parsed_data and claude_response.get("content"):
+            # Backward compatibility path (demo mode or legacy payload)
+            try:
+                import json
+                parsed_data = json.loads(claude_response["content"])
+            except Exception:
+                parsed_data = None
+
         # Step 4: Build structured synthesis routes
         routes = []
         if parsed_data:
@@ -308,6 +323,12 @@ class SynthesisPlanningOrchestrator:
                 
                 # Phase 5: Sub-step 3e: Evaluate process constraints
                 route_dict = self._evaluate_process_constraints(route_dict, scale, batch_size_kg)
+
+                # Phase 9: Sub-step 3f: Equipment-centric process design (hard feasibility)
+                route_dict = self._evaluate_equipment_feasibility(route_dict, scale, batch_size_kg)
+                if route_dict.get('equipment_rejected', False):
+                    logger.info(f"route_rejected_by_equipment_constraints_{idx+1}")
+                    continue
                 
                 # Optional convergence feedback pass (if convergence engine is wired in)
                 route_dict = self._apply_convergence_feedback_to_route(
