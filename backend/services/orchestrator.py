@@ -323,6 +323,12 @@ class SynthesisPlanningOrchestrator:
                 
                 # Phase 5: Sub-step 3e: Evaluate process constraints
                 route_dict = self._evaluate_process_constraints(route_dict, scale, batch_size_kg)
+                
+                # Optional convergence feedback pass (if convergence engine is wired in)
+                route_dict = self._apply_convergence_feedback_to_route(
+                    route_dict,
+                    request.optimize_for
+                )
 
                 # Phase 9: Sub-step 3f: Equipment-centric process design (hard feasibility)
                 route_dict = self._evaluate_equipment_feasibility(route_dict, scale, batch_size_kg)
