@@ -259,7 +259,15 @@ class ConditionPredictor:
             self.load_models()
 
         if not all([self.temp_model, self.catalyst_model, self.solvent_model]):
-            raise RuntimeError("Condition models are not available")
+            # Use fallback values if models are not loaded
+            return {
+                "temperature_celsius": 25.0,
+                "catalyst": "unknown",
+                "solvent": "THF",
+                "confidence": "low",
+                "time_hours": 4.0,
+                "fallback": True,
+            }
 
         catalyst_hint = reaction.get('catalyst')
         solvent_hint = reaction.get('solvent')
