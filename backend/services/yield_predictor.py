@@ -256,6 +256,28 @@ class YieldPredictor:
         prediction = max(0, min(100, prediction))
         
         return float(prediction)
+
+    def predict_with_uncertainty(self, reaction: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Predict yield with uncertainty.
+        Uses quantile models when available; otherwise falls back to fixed ±15%.
+        """
+        quantile_predictor = QuantileYieldPredictor(fallback_predictor=self)
+        if quantile_predictor.load_models():
+            return quantile_predictor.predict_with_uncertainty(reaction)
+
+        point_estimate = self.predict(reaction)
+        point_estimate = 75.0 if point_estimate is None else float(np.clip(point_estimate, 0, 100))
+        lower = float(np.clip(point_estimate - 15.0, 0, 100))
+        upper = float(np.clip(point_estimate + 15.0, 0, 100))
+        return {
+            "yield_percent": round(point_estimate, 1),
+            "lower_bound": round(lower, 1),
+            "upper_bound": round(upper, 1),
+            "confidence_interval": round(upper - lower, 1),
+            "confidence_level": "unknown",
+            "model": "point_estimate_fallback",
+        }
     
     def save_model(self):
         """Save trained model to disk."""
@@ -292,6 +314,144 @@ class YieldPredictor:
         except Exception as e:
             logger.error(f"Failed to load model: {str(e)}")
             return False
+
+
+class QuantileYieldPredictor(YieldPredictor):
+    """Yield predictor with q10/q50/q90 quantile uncertainty estimates."""
+
+    def __init__(
+        self,
+        model_path: str = "/app/backend/models/yield_model_quantile.pkl",
+        fallback_predictor: Optional[YieldPredictor] = None,
+    ):
+        super().__init__(model_path=model_path)
+        self.q10_model = None
+        self.q50_model = None
+        self.q90_model = None
+        self.fallback_predictor = fallback_predictor or YieldPredictor()
+
+    def train_quantile_models(self, test_size: float = 0.2, random_state: int = 42):
+        """Train q10/q50/q90 models using quantile regression objective."""
+        return asyncio.run(self.train(test_size=test_size, random_state=random_state))
+
+    async def train(self, test_size: float = 0.2, random_state: int = 42):
+        """Train quantile models and save them to yield_model_quantile.pkl."""
+        X, y = await self.prepare_training_data()
+        if len(X) < 50:
+            logger.warning(f"Insufficient data for quantile training: {len(X)} samples")
+            return None
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
+        )
+
+        def _make_model(alpha: float):
+            return xgb.XGBRegressor(
+                objective="reg:quantileerror",
+                quantile_alpha=alpha,
+                n_estimators=200,
+                max_depth=5,
+                learning_rate=0.08,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=random_state,
+            )
+
+        self.q10_model = _make_model(0.10)
+        self.q50_model = _make_model(0.50)
+        self.q90_model = _make_model(0.90)
+
+        self.q10_model.fit(X_train, y_train)
+        self.q50_model.fit(X_train, y_train)
+        self.q90_model.fit(X_train, y_train)
+
+        y_pred_q50 = np.clip(self.q50_model.predict(X_test), 0, 100)
+        q50_mae = mean_absolute_error(y_test, y_pred_q50)
+        q50_r2 = r2_score(y_test, y_pred_q50)
+
+        self.save_models()
+        return {
+            "q50_mae": float(q50_mae),
+            "q50_r2": float(q50_r2),
+            "n_samples": len(X),
+            "n_features": X.shape[1],
+        }
+
+    def save_models(self):
+        """Save quantile models."""
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_data = {
+            "q10_model": self.q10_model,
+            "q50_model": self.q50_model,
+            "q90_model": self.q90_model,
+        }
+        with open(self.model_path, "wb") as f:
+            pickle.dump(model_data, f)
+        logger.info(f"Quantile models saved to {self.model_path}")
+
+    def load_models(self) -> bool:
+        """Load quantile models from yield_model_quantile.pkl."""
+        if not self.model_path.exists():
+            return False
+        try:
+            with open(self.model_path, "rb") as f:
+                model_data = pickle.load(f)
+            self.q10_model = model_data.get("q10_model")
+            self.q50_model = model_data.get("q50_model")
+            self.q90_model = model_data.get("q90_model")
+            return all([self.q10_model, self.q50_model, self.q90_model])
+        except Exception as e:
+            logger.error(f"Failed to load quantile models: {e}")
+            return False
+
+    def predict_with_uncertainty(self, reaction: Dict[str, Any]) -> Dict[str, Any]:
+        """Predict median yield and 10/90 quantile uncertainty bounds."""
+        if not all([self.q10_model, self.q50_model, self.q90_model]) and not self.load_models():
+            fallback = self.fallback_predictor.predict(reaction)
+            fallback = 75.0 if fallback is None else float(np.clip(fallback, 0, 100))
+            lower = float(np.clip(fallback - 15.0, 0, 100))
+            upper = float(np.clip(fallback + 15.0, 0, 100))
+            return {
+                "yield_percent": round(fallback, 1),
+                "lower_bound": round(lower, 1),
+                "upper_bound": round(upper, 1),
+                "confidence_interval": round(upper - lower, 1),
+                "confidence_level": "unknown",
+                "model": "point_estimate_fallback",
+            }
+
+        features = self.featurize_reaction(reaction)
+        if features is None:
+            fallback = self.fallback_predictor.predict(reaction)
+            fallback = 75.0 if fallback is None else float(np.clip(fallback, 0, 100))
+            return {
+                "yield_percent": round(fallback, 1),
+                "lower_bound": round(max(0.0, fallback - 15.0), 1),
+                "upper_bound": round(min(100.0, fallback + 15.0), 1),
+                "confidence_interval": 30.0,
+                "confidence_level": "unknown",
+                "model": "point_estimate_fallback",
+            }
+
+        x = features.reshape(1, -1)
+        q10 = float(np.clip(self.q10_model.predict(x)[0], 0, 100))
+        q50 = float(np.clip(self.q50_model.predict(x)[0], 0, 100))
+        q90 = float(np.clip(self.q90_model.predict(x)[0], 0, 100))
+
+        lower = min(q10, q50, q90)
+        upper = max(q10, q50, q90)
+        median = float(np.clip(q50, lower, upper))
+        ci = upper - lower
+        confidence = "high" if ci < 15 else "medium" if ci < 25 else "low"
+
+        return {
+            "yield_percent": round(median, 1),
+            "lower_bound": round(lower, 1),
+            "upper_bound": round(upper, 1),
+            "confidence_interval": round(ci, 1),
+            "confidence_level": confidence,
+            "model": "quantile_xgboost",
+        }
 
 
 async def main():

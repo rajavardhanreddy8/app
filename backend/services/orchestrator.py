@@ -414,6 +414,8 @@ class SynthesisPlanningOrchestrator:
     def _predict_yields_for_route(self, route: Dict) -> Dict:
         """Predict yields for each step using ML."""
         overall_yield = 100.0
+        overall_lower = 100.0
+        overall_upper = 100.0
         
         for step in route['steps']:
             try:
@@ -423,21 +425,51 @@ class SynthesisPlanningOrchestrator:
                     'conditions': step.get('predicted_conditions', {})
                 }
                 
-                predicted_yield = self.yield_predictor.predict(reaction_dict)
-                
+                uncertainty = self.yield_predictor.predict_with_uncertainty(reaction_dict)
+                predicted_yield = uncertainty.get("yield_percent")
+
                 if predicted_yield and predicted_yield > 0:
                     step['predicted_yield'] = round(predicted_yield, 1)
                 else:
                     step['predicted_yield'] = 75.0  # Default
+                    uncertainty = {
+                        "yield_percent": 75.0,
+                        "lower_bound": 60.0,
+                        "upper_bound": 90.0,
+                        "confidence_interval": 30.0,
+                        "confidence_level": "unknown",
+                        "model": "point_estimate_fallback",
+                    }
+                step["predicted_yield_uncertainty"] = uncertainty
                 
                 overall_yield *= (step['predicted_yield'] / 100.0)
+                overall_lower *= (uncertainty.get("lower_bound", step['predicted_yield']) / 100.0)
+                overall_upper *= (uncertainty.get("upper_bound", step['predicted_yield']) / 100.0)
                 
             except Exception as e:
                 logger.error(f"yield_prediction_failed: {str(e)}")
                 step['predicted_yield'] = 75.0
+                step["predicted_yield_uncertainty"] = {
+                    "yield_percent": 75.0,
+                    "lower_bound": 60.0,
+                    "upper_bound": 90.0,
+                    "confidence_interval": 30.0,
+                    "confidence_level": "unknown",
+                    "model": "point_estimate_fallback",
+                }
                 overall_yield *= 0.75
+                overall_lower *= 0.60
+                overall_upper *= 0.90
         
         route['overall_yield_percent'] = round(overall_yield, 2)
+        lower = round(max(0.0, min(100.0, overall_lower)), 2)
+        upper = round(max(0.0, min(100.0, overall_upper)), 2)
+        ci = round(max(0.0, upper - lower), 2)
+        route["yield_uncertainty"] = {
+            "lower": lower,
+            "upper": upper,
+            "confidence": "high" if ci < 15 else "medium" if ci < 25 else "low",
+        }
         return route
     
     def _predict_times_for_route(self, route: Dict) -> Dict:
@@ -820,6 +852,7 @@ class SynthesisPlanningOrchestrator:
             starting_materials=starting_materials,
             steps=steps,
             overall_yield_percent=route_dict.get('scale_adjusted_overall_yield', 75.0),
+            yield_uncertainty=route_dict.get('yield_uncertainty'),
             total_cost_usd=route_dict.get('total_cost_usd', 100.0),
             total_time_hours=route_dict.get('total_time_hours', 10.0),
             score=route_dict.get('score', 50.0),

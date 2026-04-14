@@ -47,6 +47,7 @@ class SynthesisRoute(BaseModel):
     starting_materials: List[MolecularStructure]
     steps: List[ReactionStep]
     overall_yield_percent: float = Field(..., ge=0, le=100)
+    yield_uncertainty: Optional[Dict[str, Any]] = None
     total_cost_usd: float
     total_time_hours: float
     score: float  # Multi-objective score

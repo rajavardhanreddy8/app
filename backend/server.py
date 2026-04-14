@@ -211,6 +211,16 @@ async def plan_synthesis(
         else:
             logger.info("using_basic_synthesis_planning")
             result = await orchestrator.plan_synthesis(request)
+
+        # Ensure every route has yield uncertainty in API response.
+        for route in result.routes:
+            if getattr(route, "yield_uncertainty", None) is None:
+                y = float(getattr(route, "overall_yield_percent", 75.0))
+                route.yield_uncertainty = {
+                    "lower": max(0.0, round(y - 15.0, 2)),
+                    "upper": min(100.0, round(y + 15.0, 2)),
+                    "confidence": "unknown",
+                }
         
         # Store in MongoDB for history
         doc = result.model_dump()
