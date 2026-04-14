@@ -1,10 +1,11 @@
 {
     "pythonVersion": "3.13",
     "reportMissingModuleSource": "none",
+    "extraPaths": ["backend"],
     "executionEnvironments": [
         {
             "root": "backend",
-            "extraPaths": []
+            "extraPaths": ["backend"]
         },
         {
             "root": "tests",
