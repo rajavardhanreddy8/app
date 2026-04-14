@@ -1,7 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from models.chemistry import SynthesisRoute, ReactionStep
-from services.yield_predictor import YieldPredictor
+from models import get_yield_predictor
 from services.cost_database import CostDatabase
 import numpy as np
 
@@ -21,7 +21,7 @@ class EnhancedRouteScorer:
         Args:
             pharma_mode: If True, enforce pharma-grade yield requirements (≥99%)
         """
-        self.yield_predictor = YieldPredictor()
+        self.yield_predictor = get_yield_predictor()
         self.cost_database = CostDatabase()
         
         # Pharma mode settings
@@ -29,7 +29,12 @@ class EnhancedRouteScorer:
         self.pharma_min_yield = 99.0  # Minimum acceptable yield for pharma
         
         # Try to load ML model
-        self.ml_available = self.yield_predictor.load_model()
+        self.ml_available = self.yield_predictor.model is not None
+        if not self.ml_available:
+            # Try loading if not there
+            self.yield_predictor.load_model()
+            self.ml_available = self.yield_predictor.model is not None
+            
         if not self.ml_available:
             logger.warning("ML yield predictor not available, using heuristics")
         

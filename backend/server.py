@@ -48,6 +48,7 @@ route_optimizer = None  # Will be initialized in startup
 convergence_engine = None  # Phase 7 convergence engine
 yield_engine = None  # Phase 8 yield optimization engine
 learning_engine = None  # Phase 10 closed-loop learning
+yield_predictor = None # Phase 3 yield predictor
 
 # Load ML models and templates on startup
 condition_predictor.load_models()
@@ -145,8 +146,14 @@ async def startup_event():
         yield_engine = YieldOptimizationEngine(
             constraints_engine=constraints_engine
         )
+        
+        # Phase 3: Initialize YieldPredictor singleton and pass to LearningEngine
+        from models import get_yield_predictor
+        yield_predictor = get_yield_predictor()
+        
         learning_engine = ClosedLoopLearningEngine(
             db=db,
+            yield_predictor=yield_predictor,
             retrain_threshold=int(os.getenv("FEEDBACK_RETRAIN_THRESHOLD", "25"))
         )
         logging.info("✓ Route optimizer + convergence + yield + closed-loop learning initialized")
@@ -699,6 +706,28 @@ class FeedbackIngestionRequest(BaseModel):
 
 class RetrainRequest(BaseModel):
     reason: str = "manual"
+
+@api_router.post("/learning/retrain")
+async def trigger_manual_retraining(request: RetrainRequest = RetrainRequest()):
+    """
+    Manually trigger model retraining.
+    
+    This calls the closed-loop learning engine to retrain models
+    based on accumulated feedback and synthetic data.
+    """
+    if not learning_engine:
+        raise HTTPException(status_code=503, detail="Learning engine not initialized")
+        
+    try:
+        versions = await learning_engine.trigger_retraining(reason=request.reason)
+        return {
+            "status": "success",
+            "message": "Retraining triggered successfully",
+            "versions": versions
+        }
+    except Exception as e:
+        logger.error(f"Retraining failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.post("/routes/mutate")

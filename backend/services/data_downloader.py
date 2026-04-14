@@ -3,11 +3,75 @@ import requests
 import gzip
 import json
 import logging
+import random
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+def generate_synthetic_training_dataset(n_reactions: int = 200, seed: int = 42) -> List[Dict[str, Any]]:
+    """Generates a deterministic synthetic dataset of chemical reactions."""
+    random.seed(seed)
+    dataset = []
+    
+    reaction_types = ["esterification", "suzuki", "reduction", "alkylation", "hydrogenation", "nitration"]
+    solvents = ["THF", "DCM", "DMF", "Methanol", "Ethanol", "Water"]
+    catalysts = ["Pd/C", "Pd(PPh3)4", "Et3N", "NaOH", "H2SO4", None]
+    
+    for i in range(n_reactions):
+        rxn_type = random.choice(reaction_types)
+        
+        # Consistent logic for reaction components based on type
+        if rxn_type == "esterification":
+            # Acid + Alcohol → Ester
+            reactants = ["CC(=O)O", "CCO"]
+            products = ["CC(=O)OCC"]
+        elif rxn_type == "suzuki":
+            # Bromobenzene + Phenylboronic acid → Biphenyl
+            reactants = ["c1ccc(Br)cc1", "c1ccc(B(O)O)cc1"]
+            products = ["c1ccc(cc1)-c2ccccc2"]
+        elif rxn_type == "reduction":
+            # Acetone → Isopropanol
+            reactants = ["CC(=O)C"]
+            products = ["CC(O)C"]
+        else:
+            reactants = ["c1ccccc1", "CC(=O)Cl"]
+            products = ["CC(=O)c1ccccc1"]
+            
+        # Deterministic but realistic yield logic (Phase 3 stability)
+        if rxn_type == "suzuki":
+            y = round(random.uniform(65, 98), 2)
+        elif rxn_type == "esterification":
+            y = round(random.uniform(60, 95), 2)
+        else:
+            y = round(random.uniform(10, 85), 2)
+            
+        dataset.append({
+            "id": f"syn_{i}",
+            "reactants": reactants,
+            "products": products,
+            "reaction_type": rxn_type,
+            "yield_percent": y,
+            "temperature_celsius": random.choice([0, 25, 50, 80, 100, 150]),
+            "time_hours": round(random.uniform(0.5, 24), 1),
+            "solvent": random.choice(solvents),
+            "catalyst": random.choice(catalysts)
+        })
+        
+    return dataset
+
+def download_ord_subset(output_path: Optional[str] = None, n_synthetic: int = 100) -> List[Dict]:
+    """Offline fallback: generates synthetic data and saves to JSON."""
+    if output_path is None:
+        output_path = "training_reactions.json"
+        
+    reactions = generate_synthetic_training_dataset(n_reactions=n_synthetic)
+    
+    with open(output_path, "w") as f:
+        json.dump(reactions, f, indent=2)
+        
+    return reactions
 
 class USPTODataDownloader:
     """Download and process USPTO reaction dataset."""

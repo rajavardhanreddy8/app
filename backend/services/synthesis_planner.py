@@ -7,6 +7,7 @@ from models.chemistry import (
     ReactionCondition
 )
 from services.molecular_service import MolecularService
+from models import get_yield_predictor
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class SynthesisPlanner:
     
     def __init__(self):
         self.molecular_service = MolecularService()
+        self.yield_predictor = get_yield_predictor()
         # Common reaction types and their typical yields
         self.reaction_patterns = {
             "suzuki": {"yield": 85, "difficulty": "moderate", "cost_factor": 1.2},
@@ -144,7 +146,22 @@ class SynthesisPlanner:
                     
                     # Get reaction info
                     reaction_type = step_data.get("reaction_type", "unknown").lower()
-                    estimated_yield = step_data.get("estimated_yield", 75.0)
+                    
+                    # Phase 3: Use ML for yield prediction if available
+                    estimated_yield = step_data.get("estimated_yield")
+                    if estimated_yield is None:
+                        try:
+                            # Standard format for predictor
+                            rxn_dict = {
+                                "reactants": step_data.get("reactants", []),
+                                "products": [p_smiles],
+                                "reaction_type": reaction_type
+                            }
+                            prediction = self.yield_predictor.predict(rxn_dict)
+                            estimated_yield = prediction if prediction is not None else 75.0
+                        except Exception:
+                            estimated_yield = 75.0
+                            
                     estimated_cost = step_data.get("estimated_cost_usd", 100.0)
                     
                     # Get difficulty from pattern database

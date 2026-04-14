@@ -19,6 +19,8 @@ class ReactionDatabase:
         self.reactions = self.db.reactions
         self.templates = self.db.reaction_templates
         self.costs = self.db.reagent_costs
+        self.feedback = self.db.feedback
+        self.model_versions = self.db.model_versions
     
     async def init_indexes(self):
         """Create database indexes for performance."""
@@ -37,6 +39,14 @@ class ReactionDatabase:
             # Costs indexes
             await self.costs.create_index("smiles")
             await self.costs.create_index("name")
+
+            # Feedback indexes
+            await self.feedback.create_index("reaction_id")
+            await self.feedback.create_index("verified")
+            
+            # Model versions indexes
+            await self.model_versions.create_index("version")
+            await self.model_versions.create_index("service")
             
             logger.info("Database indexes created successfully")
         except Exception as e:
@@ -115,5 +125,25 @@ class ReactionDatabase:
             "total_reactions": await self.count_reactions(),
             "reactions_with_yield": await self.count_reactions({"yield_percent": {"$ne": None}}),
             "total_templates": await self.templates.count_documents({}),
-            "total_costs": await self.costs.count_documents({})
+            "total_costs": await self.costs.count_documents({}),
+            "total_feedback": await self.feedback.count_documents({}),
+            "total_model_versions": await self.model_versions.count_documents({})
         }
+    
+    async def save_feedback(self, feedback_data: Dict[str, Any]) -> str:
+        """Store user feedback for a reaction."""
+        try:
+            result = await self.feedback.insert_one(feedback_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to save feedback: {str(e)}")
+            return ""
+
+    async def record_model_version(self, version_data: Dict[str, Any]) -> str:
+        """Record model training event and version."""
+        try:
+            result = await self.model_versions.insert_one(version_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to record model version: {str(e)}")
+            return ""

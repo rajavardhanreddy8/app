@@ -10,15 +10,22 @@ import xgboost as xgb
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors
 from services.reaction_database import ReactionDatabase
+from services.data_downloader import generate_synthetic_training_dataset
 import asyncio
+import json
 
 logger = logging.getLogger(__name__)
 
 class YieldPredictor:
     """ML-based yield prediction using XGBoost."""
     
-    def __init__(self, model_path: str = "/app/backend/models/yield_model.pkl"):
-        self.model_path = Path(model_path)
+    def __init__(self, model_path: Optional[str] = None):
+        if model_path is None:
+            # Better path resolution for Windows/Local environments
+            base_dir = Path(__file__).parent.parent
+            self.model_path = base_dir / "models" / "yield_model.pkl"
+        else:
+            self.model_path = Path(model_path)
         self.model = None
         self.feature_names = []
         self.scaler_params = {}
@@ -42,7 +49,7 @@ class YieldPredictor:
                 'tpsa': Descriptors.TPSA(mol),
                 'num_rotatable_bonds': Descriptors.NumRotatableBonds(mol),
                 'num_heteroatoms': Descriptors.NumHeteroatoms(mol),
-                'fraction_csp3': Descriptors.FractionCsp3(mol),
+                'fraction_csp3': Descriptors.FractionCSP3(mol),
             }
             
             return features
@@ -127,42 +134,42 @@ class YieldPredictor:
             logger.error(f"Error featurizing reaction: {str(e)}")
             return None
     
-    async def prepare_training_data(self) -> tuple:
-        """Load reactions from database and prepare training data."""
-        logger.info("Loading reactions from database...")
+    async def prepare_training_data(self) -> List[Dict[str, Any]]:
+        """Load training data from JSON file or generate synthetic data."""
+        # Prefer local JSON file
+        json_path = Path("training_reactions.json")
+        if json_path.exists():
+            with open(json_path, "r") as f:
+                return json.load(f)
         
-        db = ReactionDatabase()
-        reactions = await db.get_reactions_with_yield(min_yield=0, limit=10000)
+        # Fallback to fresh generation
+        return generate_synthetic_training_dataset(n_reactions=200)
+
+    async def train(self, data: Optional[List[Dict[str, Any]]] = None, test_size: float = 0.2, random_state: int = 42) -> Dict[str, Any]:
+        """Train the model using provided or prepared data."""
+        if data is None:
+            data = await self.prepare_training_data()
+            
+        if not data:
+            logger.error("No training data available")
+            return {}
         
-        logger.info(f"Loaded {len(reactions)} reactions with yield data")
-        
-        X = []
-        y = []
-        
-        for rxn in reactions:
+        # Convert to features and labels
+        X_list = []
+        y_list = []
+        for rxn in data:
             features = self.featurize_reaction(rxn)
-            if features is not None and rxn.get('yield_percent'):
-                X.append(features)
-                y.append(rxn['yield_percent'])
+            if features is not None:
+                X_list.append(features)
+                y_list.append(rxn.get('yield_percent', 0.0))
         
-        X = np.array(X)
-        y = np.array(y)
-        
-        logger.info(f"Prepared {len(X)} samples with {X.shape[1]} features")
-        
-        return X, y
-    
-    async def train(self, test_size: float = 0.2, random_state: int = 42):
-        """Train the yield prediction model."""
-        logger.info("Starting model training...")
-        
-        # Prepare data
-        X, y = await self.prepare_training_data()
-        
-        if len(X) < 50:
-            logger.warning(f"Insufficient data for training: {len(X)} samples")
-            return None
-        
+        if len(X_list) < 10:
+            logger.warning(f"Insufficient data for training: {len(X_list)} samples")
+            return {}
+            
+        X = np.array(X_list)
+        y = np.array(y_list)
+
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state
