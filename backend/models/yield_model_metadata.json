@@ -1,0 +1,21 @@
+{
+    "version": "1.0.0",
+    "params": {
+        "n_estimators": 100,
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "random_state": 42
+    },
+    "metrics": {
+        "train_mae": 14.924032884597777,
+        "test_mae": 15.241677648925782,
+        "train_r2": 0.38164182942327307,
+        "test_r2": 0.40812153726585143,
+        "n_samples": 1000,
+        "n_features": 531,
+        "timestamp": "2026-04-14T04:06:39.333510"
+    },
+    "feature_names": []
+}

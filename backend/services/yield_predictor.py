@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from sklearn.model_selection import train_test_split
@@ -29,6 +30,9 @@ class YieldPredictor:
         self.model = None
         self.feature_names = []
         self.scaler_params = {}
+        self.model_params = {}
+        self.model_metrics = {}
+        self.model_version = "1.0.0"
         
     def compute_molecular_features(self, smiles: str) -> Dict[str, float]:
         """Compute molecular descriptors for a SMILES string."""
@@ -207,6 +211,25 @@ class YieldPredictor:
         logger.info(f"Test R²: {test_r2:.3f}")
         
         # Save model
+        self.model_metrics = {
+            'train_mae': float(train_mae),
+            'test_mae': float(test_mae),
+            'train_r2': float(train_r2),
+            'test_r2': float(test_r2),
+            'n_samples': int(len(X)),
+            'n_features': int(X.shape[1]),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        self.model_params = {
+            'n_estimators': 100,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'random_state': int(random_state)
+        }
+        
         self.save_model()
         
         return {
@@ -251,7 +274,18 @@ class YieldPredictor:
         with open(self.model_path, 'wb') as f:
             pickle.dump(model_data, f)
         
-        logger.info(f"Model saved to {self.model_path}")
+        # Also save human-readable metadata
+        metadata_path = self.model_path.parent / "yield_model_metadata.json"
+        metadata = {
+            'version': self.model_version,
+            'params': self.model_params,
+            'metrics': self.model_metrics,
+            'feature_names': self.feature_names
+        }
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=4)
+            
+        logger.info(f"Model saved to {self.model_path} and metadata to {metadata_path}")
     
     def load_model(self):
         """Load trained model from disk."""
