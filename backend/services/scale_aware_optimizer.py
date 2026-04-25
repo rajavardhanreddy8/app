@@ -10,8 +10,22 @@ class Scale(Enum):
     PILOT = "pilot"
     INDUSTRIAL = "industrial"
 
+
+# ── Reaction-type scale sensitivity multipliers ──
+SCALE_SENSITIVE = {
+    'grignard': 1.8,             # Very sensitive — cryogenic control hard at scale
+    'diels-alder': 1.5,          # Exotherm hard to control
+    'diels_alder': 1.5,
+    'reductive amination': 1.2,
+    'reductive_amination': 1.2,
+    'suzuki': 0.8,               # Relatively robust
+    'esterification': 0.6,       # Very robust
+    'reduction': 0.7,
+}
+
+
 class ScaleAwareOptimizer:
-    """Scale-dependent optimization for chemical reactions."""
+    """Scale-dependent optimization with physics-based yield loss prediction."""
     
     def __init__(self):
         self.scale_parameters = self._define_scale_parameters()
@@ -39,11 +53,11 @@ class ScaleAwareOptimizer:
                 'cost_weight': 0.3,
                 'yield_weight': 0.4,
                 'purity_weight': 0.3,
-                'catalyst_loading_factor': 0.8,  # Reduced loading at scale
+                'catalyst_loading_factor': 0.8,
                 'solvent_volume_factor': 0.85,
                 'mixing_efficiency': 0.85,
                 'heat_transfer_coeff': 300,
-                'reaction_time_factor': 1.2,  # Longer times
+                'reaction_time_factor': 1.2,
                 'catalyst_recovery': True,
                 'solvent_recovery': True
             },
@@ -55,12 +69,69 @@ class ScaleAwareOptimizer:
                 'purity_weight': 0.1,
                 'catalyst_loading_factor': 0.6,
                 'solvent_volume_factor': 0.7,
-                'mixing_efficiency': 0.75,
-                'heat_transfer_coeff': 200,
+                'mixing_efficiency': 0.70,
+                'heat_transfer_coeff': 150,
                 'reaction_time_factor': 1.5,
                 'catalyst_recovery': True,
                 'solvent_recovery': True
             }
+        }
+    
+    # ── Physics-based yield loss calculation ──
+    def _calculate_physics_yield_loss(
+        self,
+        scale: Scale,
+        params: Dict,
+        reaction: Dict,
+    ) -> Dict:
+        """
+        Calculate yield loss from physical constraints instead of
+        hard-coded percentages.
+
+        Returns dict with individual losses, warnings, and predicted yield.
+        """
+        base_yield = reaction.get('yield_percent', 75.0)
+        temperature = reaction.get('temperature_c',
+                      reaction.get('temperature_celsius', 25.0))
+        reaction_type = reaction.get('reaction_type', 'unknown')
+
+        coeff = params['heat_transfer_coeff']
+        mixing_eff = params['mixing_efficiency']
+
+        # 1. Heat transfer limitation
+        if temperature > 60.0:
+            heat_loss_pct = max(0.0, (500.0 - coeff) / 500.0 * 8.0)
+        else:
+            heat_loss_pct = 0.0
+
+        # 2. Mixing efficiency degradation
+        mixing_loss_pct = (1.0 - mixing_eff) * 15.0
+
+        # 3. Reaction-type sensitivity multiplier
+        sensitivity = SCALE_SENSITIVE.get(reaction_type.lower(), 1.0)
+
+        # 4. Total yield loss
+        total_loss = (heat_loss_pct + mixing_loss_pct) * sensitivity
+        predicted_yield = base_yield * (1.0 - total_loss / 100.0)
+        predicted_yield = max(base_yield * 0.60, predicted_yield)  # floor at 60% of base
+
+        # 5. Scale-up warnings
+        warnings: List[str] = []
+        if heat_loss_pct > 5.0:
+            warnings.append("High temperature reactions lose yield at scale — consider improved heat exchanger design")
+        if reaction_type.lower() == 'grignard' and scale == Scale.INDUSTRIAL:
+            warnings.append("Cryogenic reactions are extremely difficult at industrial scale — consider flow chemistry")
+        if mixing_loss_pct > 10.0:
+            warnings.append("Poor mixing predicted — consider flow chemistry or baffled reactor")
+
+        return {
+            'heat_loss_pct': round(heat_loss_pct, 2),
+            'mixing_loss_pct': round(mixing_loss_pct, 2),
+            'sensitivity_multiplier': sensitivity,
+            'total_loss_pct': round(total_loss, 2),
+            'base_yield': base_yield,
+            'predicted_yield': round(predicted_yield, 2),
+            'scale_up_warnings': warnings,
         }
     
     def optimize_for_scale(
@@ -72,7 +143,7 @@ class ScaleAwareOptimizer:
         """
         Optimize reaction parameters for specific scale.
         
-        Returns scale-adjusted parameters and predictions.
+        Returns scale-adjusted parameters and physics-based predictions.
         """
         scale = Scale(target_scale.lower())
         params = self.scale_parameters[scale]
@@ -115,22 +186,16 @@ class ScaleAwareOptimizer:
         adjustments['catalyst_recovery_feasible'] = params['catalyst_recovery']
         adjustments['solvent_recovery_feasible'] = params['solvent_recovery']
         
-        # Yield prediction with scale effects
-        base_yield = reaction.get('yield_percent', 75.0)
-        
-        # Scale-dependent yield loss
-        if scale == Scale.LAB:
-            yield_loss = 0
-        elif scale == Scale.PILOT:
-            yield_loss = 3.0  # 3% typical loss at pilot
-        else:  # Industrial
-            yield_loss = 5.0  # 5% typical loss at industrial
-        
-        # Mixing efficiency effect
-        mixing_loss = (1.0 - params['mixing_efficiency']) * 5.0
-        
-        adjusted_yield = base_yield - yield_loss - mixing_loss
-        adjustments['predicted_yield_percent'] = round(max(0, adjusted_yield), 2)
+        # ── Physics-based yield prediction ──
+        yield_info = self._calculate_physics_yield_loss(scale, params, reaction)
+        adjustments['predicted_yield_percent'] = yield_info['predicted_yield']
+        adjustments['yield_loss_detail'] = {
+            'heat_loss_pct': yield_info['heat_loss_pct'],
+            'mixing_loss_pct': yield_info['mixing_loss_pct'],
+            'sensitivity_multiplier': yield_info['sensitivity_multiplier'],
+            'total_loss_pct': yield_info['total_loss_pct'],
+        }
+        adjustments['scale_up_warnings'] = yield_info['scale_up_warnings']
         
         # Calculate scale factor (useful for equipment)
         adjustments['scale_factor'] = batch_size_kg / 0.1  # Relative to 100g
@@ -263,39 +328,35 @@ if __name__ == "__main__":
     
     optimizer = ScaleAwareOptimizer()
     
-    # Test reaction
-    test_reaction = {
-        'catalyst_loading': 5.0,
-        'solvent_volume_ml_per_g': 10.0,
-        'time_hours': 4.0,
-        'yield_percent': 85.0
-    }
+    print("\n" + "=" * 70)
+    print("Physics-Based Yield Loss — Scale-Up Demo")
+    print("=" * 70)
     
-    print("\n" + "="*60)
-    print("Scale-Aware Optimization System")
-    print("="*60)
-    
-    for scale in ['lab', 'pilot', 'industrial']:
-        batch_sizes = {'lab': 0.1, 'pilot': 10.0, 'industrial': 1000.0}
-        batch = batch_sizes[scale]
+    for rxn_type in ['esterification', 'suzuki', 'grignard', 'diels-alder']:
+        test_reaction = {
+            'catalyst_loading': 5.0,
+            'solvent_volume_ml_per_g': 10.0,
+            'time_hours': 4.0,
+            'yield_percent': 85.0,
+            'temperature_c': 80.0,
+            'reaction_type': rxn_type,
+        }
         
-        result = optimizer.optimize_for_scale(test_reaction, scale, batch)
-        
-        print(f"\n{scale.upper()} Scale ({batch}kg):")
-        print(f"  Catalyst loading: {result['catalyst_loading_mol_percent']}%")
-        print(f"  Solvent volume: {result['solvent_volume_ml_per_g']} mL/g")
-        print(f"  Reaction time: {result['reaction_time_hours']}h")
-        print(f"  Predicted yield: {result['predicted_yield_percent']}%")
-        print(f"  Mixing efficiency: {result['mixing_efficiency']}")
-        print(f"  Recommendations: {len(result['recommendations'])}")
+        print(f"\n── {rxn_type.upper()} (base yield 85%, temp 80°C) ──")
+        for scale in ['lab', 'pilot', 'industrial']:
+            batch_sizes = {'lab': 0.1, 'pilot': 10.0, 'industrial': 1000.0}
+            batch = batch_sizes[scale]
+            
+            result = optimizer.optimize_for_scale(test_reaction, scale, batch)
+            yd = result['yield_loss_detail']
+            print(
+                f"  {scale:<12} yield={result['predicted_yield_percent']:.1f}%  "
+                f"heat_loss={yd['heat_loss_pct']:.1f}%  "
+                f"mix_loss={yd['mixing_loss_pct']:.1f}%  "
+                f"sensitivity={yd['sensitivity_multiplier']:.1f}x"
+            )
+            if result['scale_up_warnings']:
+                for w in result['scale_up_warnings']:
+                    print(f"    ⚠ {w}")
     
-    print("\n" + "="*60)
-    print("Scale-Up Risk Assessment")
-    print("="*60)
-    
-    risk = optimizer.calculate_scale_up_risk('lab', 'industrial', 'Suzuki coupling')
-    print(f"Risk level: {risk['risk_level']}")
-    print(f"Success rate: {risk['predicted_success_rate']:.0%}")
-    print(f"Mitigation strategies: {len(risk['mitigation_strategies'])}")
-    
-    print("\n" + "="*60)
+    print("\n" + "=" * 70)

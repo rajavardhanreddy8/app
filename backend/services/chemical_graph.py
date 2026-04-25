@@ -2,7 +2,7 @@
 Chemical Reaction Graph
 
 Builds a directed graph from reaction database where:
-- Nodes = molecules (SMILES)
+- Nodes = molecules (canonical SMILES)
 - Edges = reactions
 - Weights = yield, cost, time, constraints
 """
@@ -11,8 +11,20 @@ import logging
 from typing import Dict, List, Set, Optional, Tuple
 from collections import defaultdict
 import networkx as nx
+from rdkit import Chem
 
 logger = logging.getLogger(__name__)
+
+
+def canonicalize_smiles(smiles: str) -> Optional[str]:
+    """Canonicalize a SMILES string using RDKit.
+
+    Returns the canonical SMILES or None if the input is invalid.
+    """
+    if not smiles or not smiles.strip():
+        return None
+    mol = Chem.MolFromSmiles(smiles.strip())
+    return Chem.MolToSmiles(mol) if mol else None
 
 
 class ChemicalGraph:
@@ -21,6 +33,9 @@ class ChemicalGraph:
     
     Enables graph-based search algorithms (MCTS, A*, Dijkstra) for
     optimal synthesis route discovery.
+
+    All SMILES are canonicalized before insertion/lookup so that
+    equivalent representations (e.g. "OCC", "CCO") map to the same node.
     """
     
     def __init__(self):
@@ -37,18 +52,40 @@ class ChemicalGraph:
             reactions: List of reaction dicts with reactants, products, conditions
         """
         logger.info(f"building_chemical_graph: {len(reactions)} reactions")
+        skipped = 0
         
         for idx, rxn in enumerate(reactions):
             try:
-                reactants = rxn.get('reactants', [])
-                products = rxn.get('products', [])
+                raw_reactants = rxn.get('reactants', [])
+                raw_products = rxn.get('products', [])
+                
+                if not raw_reactants or not raw_products:
+                    continue
+                
+                # Canonicalize all SMILES
+                reactants = []
+                for smi in raw_reactants:
+                    canon = canonicalize_smiles(smi)
+                    if canon:
+                        reactants.append(canon)
+                    else:
+                        logger.debug(f"skipping_invalid_reactant: '{smi}' in rxn_{idx}")
+                
+                products = []
+                for smi in raw_products:
+                    canon = canonicalize_smiles(smi)
+                    if canon:
+                        products.append(canon)
+                    else:
+                        logger.debug(f"skipping_invalid_product: '{smi}' in rxn_{idx}")
                 
                 if not reactants or not products:
+                    skipped += 1
                     continue
                 
                 # Add nodes (molecules)
                 for mol in reactants + products:
-                    if mol and not self.graph.has_node(mol):
+                    if not self.graph.has_node(mol):
                         self.graph.add_node(mol, smiles=mol)
                         self.molecule_count += 1
                 
@@ -86,6 +123,9 @@ class ChemicalGraph:
                 logger.error(f"failed_to_add_reaction_{idx}: {str(e)}")
                 continue
         
+        if skipped:
+            logger.warning(f"skipped_{skipped}_reactions with invalid SMILES")
+        
         logger.info(
             f"chemical_graph_built: {self.molecule_count} molecules, "
             f"{self.reaction_count} reaction edges"
@@ -96,27 +136,29 @@ class ChemicalGraph:
         Get molecules that can produce this molecule (retrosynthesis).
         
         Args:
-            molecule: Product SMILES
+            molecule: Product SMILES (will be canonicalized)
             
         Returns:
             List of reactant SMILES
         """
-        if not self.graph.has_node(molecule):
+        canon = canonicalize_smiles(molecule) or molecule
+        if not self.graph.has_node(canon):
             return []
         
-        return list(self.graph.predecessors(molecule))
+        return list(self.graph.predecessors(canon))
     
     def get_reactions_for_product(self, product: str) -> List[Dict]:
         """
         Get all reactions that produce this molecule.
         
         Args:
-            product: Product SMILES
+            product: Product SMILES (will be canonicalized)
             
         Returns:
             List of reaction metadata dicts
         """
-        return self.molecule_to_reactions.get(product, [])
+        canon = canonicalize_smiles(product) or product
+        return self.molecule_to_reactions.get(canon, [])
     
     def get_reaction_edge(self, product: str, reactant: str) -> Optional[Dict]:
         """
@@ -129,8 +171,10 @@ class ChemicalGraph:
         Returns:
             Reaction metadata dict or None
         """
-        if self.graph.has_edge(product, reactant):
-            return self.graph.edges[product, reactant]
+        canon_p = canonicalize_smiles(product) or product
+        canon_r = canonicalize_smiles(reactant) or reactant
+        if self.graph.has_edge(canon_p, canon_r):
+            return self.graph.edges[canon_p, canon_r]
         return None
     
     def find_commercial_building_blocks(
@@ -166,7 +210,8 @@ class ChemicalGraph:
         Calculate cumulative cost for a synthesis path.
         
         Args:
-            path: List of molecules in order (product → ... → starting material)
+            path: List of molecules in order (product → ... → starting material).
+                  SMILES will be canonicalized before lookup.
             
         Returns:
             Tuple of (total_cost, total_time, overall_yield)
@@ -176,8 +221,8 @@ class ChemicalGraph:
         overall_yield = 100.0
         
         for i in range(len(path) - 1):
-            product = path[i]
-            reactant = path[i + 1]
+            product = canonicalize_smiles(path[i]) or path[i]
+            reactant = canonicalize_smiles(path[i + 1]) or path[i + 1]
             
             edge_data = self.get_reaction_edge(product, reactant)
             if edge_data:
@@ -189,8 +234,8 @@ class ChemicalGraph:
     
     def is_commercial(self, molecule: str) -> bool:
         """Check if molecule is a commercial building block."""
-        # Heuristic: No predecessors = commercial
-        return self.graph.in_degree(molecule) == 0 if self.graph.has_node(molecule) else False
+        canon = canonicalize_smiles(molecule) or molecule
+        return self.graph.in_degree(canon) == 0 if self.graph.has_node(canon) else False
     
     def get_graph_stats(self) -> Dict:
         """Get graph statistics for analysis."""
@@ -208,42 +253,36 @@ class ChemicalGraph:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
-    # Test with mock reactions
+    # Test with mock reactions using non-canonical SMILES
     test_reactions = [
         {
-            'reactants': ['benzene', 'chlorine'],
-            'products': ['chlorobenzene'],
+            'reactants': ['c1ccccc1', 'Cl'],
+            'products': ['Clc1ccccc1'],
             'yield': 85.0,
             'cost': 50.0,
             'time_hours': 3.0,
             'reaction_type': 'halogenation'
         },
         {
-            'reactants': ['chlorobenzene', 'NaOH'],
-            'products': ['phenol'],
+            'reactants': ['Clc1ccccc1', '[Na]O'],
+            'products': ['Oc1ccccc1'],
             'yield': 90.0,
             'cost': 75.0,
             'time_hours': 5.0,
             'reaction_type': 'substitution'
         },
-        {
-            'reactants': ['phenol', 'acetic anhydride'],
-            'products': ['aspirin'],
-            'yield': 95.0,
-            'cost': 80.0,
-            'time_hours': 4.0,
-            'reaction_type': 'esterification'
-        }
     ]
     
-    print("\n=== Building Chemical Graph ===")
+    print("\n=== Building Chemical Graph (with canonicalization) ===")
     graph = ChemicalGraph()
     graph.build_from_reactions(test_reactions)
     
     print(f"\nGraph Stats: {graph.get_graph_stats()}")
     
-    print(f"\nReactions producing aspirin: {len(graph.get_reactions_for_product('aspirin'))}")
-    print(f"Predecessors of aspirin: {graph.get_predecessors('aspirin')}")
+    # Test canonicalization: OCC and CCO should resolve to same node
+    print(f"\ncanon('OCC') = {canonicalize_smiles('OCC')}")
+    print(f"canon('CCO') = {canonicalize_smiles('CCO')}")
+    print(f"canon('C(O)C') = {canonicalize_smiles('C(O)C')}")
     
     print(f"\nCommercial building blocks: {graph.find_commercial_building_blocks()}")
     

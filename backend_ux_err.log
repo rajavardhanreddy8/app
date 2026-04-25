@@ -1,0 +1,8 @@
+INFO:     Will watch for changes in these directories: ['C:\\Users\\admin\\Desktop\\agentic lab\\API\\rxn1\\app']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [27428] using WatchFiles
+INFO:     Started server process [26292]
+INFO:     Waiting for application startup.
+2026-04-25 20:13:38,475 - root - WARNING - \u2717 MongoDB unavailable (No servers found yet, Timeout: 2.0s, Topology Description: <TopologyDescription id: 69ecd318b8ed86257bcfdd0d, topology_type: Unknown, servers: [<ServerDescription ('localhost', 27017) server_type: Unknown, rtt: None>]>), using in-memory mock
+2026-04-25 20:13:40,043 - root - INFO - \u2713 All engines initialized
+INFO:     Application startup complete.

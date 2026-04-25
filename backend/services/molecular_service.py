@@ -57,8 +57,10 @@ class MolecularService:
     @staticmethod
     def parse_smiles(smiles: str) -> Dict[str, Any]:
         """Parse SMILES string and extract molecular properties."""
+        if isinstance(smiles, dict):
+            smiles = smiles.get('smiles', '')
         try:
-            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.MolFromSmiles(str(smiles))
             if mol is None:
                 return {"valid": False, "error": "Invalid SMILES string"}
             
@@ -103,12 +105,15 @@ class MolecularService:
     @staticmethod
     def validate_smiles(smiles: str) -> Dict[str, bool]:
         """Validate SMILES string for chemical correctness."""
+        if isinstance(smiles, dict):
+            smiles = smiles.get('smiles', '')
+            
         try:
             # Bug Fix 1: Check for empty string before processing
-            if not smiles or smiles.strip() == "":
+            if not smiles or str(smiles).strip() == "":
                 return {"valid": False, "reason": "Empty SMILES string"}
             
-            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.MolFromSmiles(str(smiles))
             
             if mol is None:
                 return {"valid": False, "reason": "Invalid SMILES syntax"}
@@ -132,8 +137,10 @@ class MolecularService:
     @staticmethod
     def calculate_fingerprint(smiles: str, fp_type: str = "morgan") -> Optional[List[int]]:
         """Calculate molecular fingerprint."""
+        if isinstance(smiles, dict):
+            smiles = smiles.get('smiles', '')
         try:
-            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.MolFromSmiles(str(smiles))
             if mol is None:
                 return None
             
@@ -149,8 +156,10 @@ class MolecularService:
     @staticmethod
     def estimate_reagent_cost(smiles: str) -> float:
         """Estimate reagent cost based on molecular complexity."""
+        if isinstance(smiles, dict):
+            smiles = smiles.get('smiles', '')
         try:
-            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.MolFromSmiles(str(smiles))
             if mol is None:
                 return 100.0  # Default cost
             

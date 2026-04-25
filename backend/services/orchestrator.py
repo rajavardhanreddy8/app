@@ -11,7 +11,7 @@ from services.synthesis_planner import SynthesisPlanner
 from services.retrosynthesis_engine import RetrosynthesisEngine
 from services.scale_aware_optimizer import ScaleAwareOptimizer
 from services.advanced_cost_model import AdvancedCostModel
-from services.yield_predictor import YieldPredictor
+from models import get_yield_predictor
 from services.condition_predictor import ConditionPredictor
 from services.enhanced_route_scorer import EnhancedRouteScorer
 from services.process_constraints_engine import ProcessConstraintsEngine
@@ -56,7 +56,7 @@ class SynthesisPlanningOrchestrator:
         self.retrosynthesis_engine = RetrosynthesisEngine()
         self.scale_optimizer = ScaleAwareOptimizer()
         self.cost_model = AdvancedCostModel()
-        self.yield_predictor = YieldPredictor()
+        self.yield_predictor = get_yield_predictor()
         self.condition_predictor = ConditionPredictor()
         self.route_scorer = EnhancedRouteScorer()
         
@@ -80,7 +80,9 @@ class SynthesisPlanningOrchestrator:
         self._graph_initialized = False
         
         # Load ML models
-        self.yield_predictor.load_model()
+        # yield_predictor is already loaded by get_yield_predictor() singleton
+        if hasattr(self.yield_predictor, 'load_model'):
+            self.yield_predictor.load_model()
         self.condition_predictor.load_models()
         
         # Cost calculation cache (hybrid approach)
@@ -433,31 +435,44 @@ class SynthesisPlanningOrchestrator:
         return route
     
     def _predict_yields_for_route(self, route: Dict) -> Dict:
-        """Predict yields for each step using ML."""
+        """Predict yields for each step using ML (specialist or global fallback)."""
         overall_yield = 100.0
-        
+
         for step in route['steps']:
             try:
                 reaction_dict = {
                     'reactants': step.get('reactants', []),
-                    'products': [step.get('product', '')],
-                    'conditions': step.get('predicted_conditions', {})
+                    'products':  [step.get('product', '')],
+                    'reaction_type': step.get('reaction_type', 'unknown'),
+                    'temperature_celsius': step.get(
+                        'predicted_conditions', {}
+                    ).get('temperature_celsius', 25.0),
+                    'catalyst': step.get('predicted_conditions', {}).get('catalyst', ''),
+                    'solvent':  step.get('predicted_conditions', {}).get('solvent', ''),
                 }
-                
-                predicted_yield = self.yield_predictor.predict(reaction_dict)
-                
-                if predicted_yield and predicted_yield > 0:
-                    step['predicted_yield'] = round(predicted_yield, 1)
+
+                # Use predict_with_uncertainty if available (SpecialistYieldPredictor),
+                # otherwise fall back to plain predict()
+                if hasattr(self.yield_predictor, 'predict_with_uncertainty'):
+                    result = self.yield_predictor.predict_with_uncertainty(reaction_dict)
+                    predicted_yield = result.get('yield_percent', 75.0)
+                    step['yield_prediction'] = result   # full dict surfaced to frontend
                 else:
-                    step['predicted_yield'] = 75.0  # Default
-                
+                    predicted_yield = self.yield_predictor.predict(reaction_dict) or 75.0
+                    step['yield_prediction'] = {
+                        'yield_percent': round(predicted_yield, 1),
+                        'model': 'global',
+                    }
+
+                step['predicted_yield'] = round(predicted_yield, 1)
                 overall_yield *= (step['predicted_yield'] / 100.0)
-                
+
             except Exception as e:
                 logger.error(f"yield_prediction_failed: {str(e)}")
                 step['predicted_yield'] = 75.0
+                step['yield_prediction'] = {'yield_percent': 75.0, 'model': 'default'}
                 overall_yield *= 0.75
-        
+
         route['overall_yield_percent'] = round(overall_yield, 2)
         return route
     

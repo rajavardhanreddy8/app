@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # ── Backend ───────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MONGO_URL=mongodb://mongo:27017
+      - DB_NAME=synthai
+      - CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      # Persist trained models and data across container restarts
+      - ./backend/models:/app/models
+      - ./backend/data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_BACKEND_URL=http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── MongoDB ───────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo_data:
+    driver: local

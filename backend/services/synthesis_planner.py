@@ -93,12 +93,14 @@ class SynthesisPlanner:
             try:
                 # Parse starting materials
                 starting_materials = []
-                for sm_smiles in route_data.get("starting_materials", []):
+                for sm_entry in route_data.get("starting_materials", []):
+                    # Robust SMILES extraction
+                    sm_smiles = sm_entry.get('smiles', sm_entry) if isinstance(sm_entry, dict) else sm_entry
                     sm_data = self.molecular_service.parse_smiles(sm_smiles)
                     if sm_data.get("valid"):
                         starting_materials.append(
                             MolecularStructure(
-                                smiles=sm_smiles,
+                                smiles=str(sm_smiles),
                                 molecular_weight=sm_data.get("molecular_weight"),
                                 properties=sm_data
                             )
@@ -112,25 +114,27 @@ class SynthesisPlanner:
                 for step_data in route_data.get("steps", []):
                     # Parse reactants
                     reactants = []
-                    for r_smiles in step_data.get("reactants", []):
+                    for r_entry in step_data.get("reactants", []):
+                        r_smiles = r_entry.get('smiles', r_entry) if isinstance(r_entry, dict) else r_entry
                         r_data = self.molecular_service.parse_smiles(r_smiles)
                         if r_data.get("valid"):
                             reactants.append(
                                 MolecularStructure(
-                                    smiles=r_smiles,
+                                    smiles=str(r_smiles),
                                     molecular_weight=r_data.get("molecular_weight"),
                                     properties=r_data
                                 )
                             )
                     
                     # Parse product
-                    p_smiles = step_data.get("product", "")
+                    p_entry = step_data.get("product", "")
+                    p_smiles = p_entry.get('smiles', p_entry) if isinstance(p_entry, dict) else p_entry
                     p_data = self.molecular_service.parse_smiles(p_smiles)
                     if not p_data.get("valid"):
                         continue
                     
                     product = MolecularStructure(
-                        smiles=p_smiles,
+                        smiles=str(p_smiles),
                         molecular_weight=p_data.get("molecular_weight"),
                         properties=p_data
                     )
@@ -153,8 +157,8 @@ class SynthesisPlanner:
                         try:
                             # Standard format for predictor
                             rxn_dict = {
-                                "reactants": step_data.get("reactants", []),
-                                "products": [p_smiles],
+                                "reactants": [r.smiles for r in reactants],
+                                "products": [product.smiles],
                                 "reaction_type": reaction_type
                             }
                             prediction = self.yield_predictor.predict(rxn_dict)
@@ -213,9 +217,10 @@ class SynthesisPlanner:
                 )
                 
                 routes.append(route)
+                logger.info(f"Successfully built route with {len(steps)} steps")
                 
             except Exception as e:
-                logger.error(f"Error building route: {str(e)}")
+                logger.error(f"Error building route: {str(e)}", exc_info=True)
                 continue
         
         # Sort routes by score (highest first)

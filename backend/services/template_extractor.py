@@ -13,8 +13,13 @@ logger = logging.getLogger(__name__)
 class TemplateExtractor:
     """Extract and store reaction templates for retrosynthesis."""
     
-    def __init__(self, template_db_path: str = "/app/backend/data/templates.pkl"):
-        self.template_db_path = Path(template_db_path)
+    def __init__(self, template_db_path: Optional[str] = None):
+        if template_db_path is None:
+            # Resolve relative to backend/data for local dev
+            base_dir = Path(__file__).parent.parent
+            self.template_db_path = base_dir / "data" / "templates.pkl"
+        else:
+            self.template_db_path = Path(template_db_path)
         self.templates = {}
         
     async def extract_templates_from_database(self) -> Dict[str, List[Dict]]:

@@ -269,6 +269,10 @@ class EnhancedRouteScorer:
                 'time': 0.10,
                 'feasibility': 0.10
             }
+
+    def _get_weights(self, optimize_for: str) -> Dict[str, float]:
+        """Alias for _get_optimization_weights (used in tests and external callers)."""
+        return self._get_optimization_weights(optimize_for)
     
     def _calculate_weighted_score(self, metrics: Dict[str, float], weights: Dict[str, float]) -> float:
         """Calculate final weighted score (0-100)."""
@@ -339,7 +343,22 @@ class EnhancedRouteScorer:
         
         # Sort by score descending
         scored_routes.sort(key=lambda x: x['score'], reverse=True)
-        
+
+        # Bug 4 fix: deduplicate routes with identical (score, overall_yield, total_cost)
+        seen_keys: set = set()
+        unique_routes = []
+        for entry in scored_routes:
+            m = entry['metrics']
+            key = (
+                round(entry['score'], 2),
+                round(m.get('overall_yield', 0), 1),
+                round(m.get('total_cost', 0), 0),
+            )
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_routes.append(entry)
+        scored_routes = unique_routes
+
         if self.pharma_mode and rejected_count > 0:
             logger.warning(f"pharma_mode: {rejected_count} routes rejected for yield <{self.pharma_min_yield}%")
         

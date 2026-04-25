@@ -52,10 +52,16 @@ class SafeLabelEncoder:
 class ConditionPredictor:
     """ML-based prediction of optimal reaction conditions."""
 
-    def __init__(self, model_dir: str = "/app/backend/models"):
-        self.model_dir = Path(model_dir)
+    def __init__(self, model_dir: Optional[str] = None):
+        if model_dir is None:
+            # Better path resolution for Windows/Local environments
+            base_dir = Path(__file__).parent.parent
+            self.model_dir = base_dir / "models"
+        else:
+            self.model_dir = Path(model_dir)
+            
         self.model_dir.mkdir(parents=True, exist_ok=True)
-
+        
         # Models for different condition types
         self.temp_model = None
         self.catalyst_model = None
@@ -322,9 +328,134 @@ class ConditionPredictor:
                 "fallback": True,
             }
 
+    # ── Safety filter ─────────────────────────────────────────────────────────
+
+    # Known incompatible reagent-solvent pairs: (reagent_kw, solvent_kw) → warning
+    _INCOMPATIBLE_PAIRS = [
+        (["n-buli", "nbuli", "butyllithium", "buli", "lda", "organolithium",
+          "grignard", "mgbr", "nah", "kh", "lah", "lithium aluminum"],
+         ["ethanol", "methanol", "water", "protic", "isopropanol", "iPrOH"],
+         "Strong base/nucleophile reacts violently with protic solvents"),
+        (["alcl3", "aluminum chloride", "becl2", "lewis acid", "bf3", "ticl4"],
+         ["water", "methanol", "ethanol", "dmso"],
+         "Lewis acid hydrolyses/deactivates in protic/coordinating media"),
+        (["pd", "palladium", "pdcl2"],
+         ["dmso"],
+         "DMSO can coordinate and poison Pd catalysts at elevated temperature"),
+        (["lialh4", "lithium aluminum hydride"],
+         ["water", "methanol", "ethanol", "thf/water", "ether/water"],
+         "LiAlH4 reacts explosively with protic solvents — use dry ether or THF only"),
+        (["peroxide", "m-cpba", "oxone", "peracid"],
+         ["acetone", "thf"],
+         "Peroxides may form explosive peroxide salts with certain solvents"),
+    ]
+
+    def check_compatibility(self, reagent: str, solvent: str) -> list:
+        """
+        Check for known reagent-solvent incompatibilities.
+
+        Returns a list of warning strings (empty list = safe).
+
+        Parameters
+        ----------
+        reagent : str
+            Reagent/catalyst name or SMILES.
+        solvent : str
+            Solvent name.
+        """
+        warnings = []
+        r = reagent.lower()
+        s = solvent.lower()
+
+        for reagent_kws, solvent_kws, message in self._INCOMPATIBLE_PAIRS:
+            reagent_match = any(kw in r for kw in reagent_kws)
+            solvent_match = any(kw in s for kw in solvent_kws)
+            if reagent_match and solvent_match:
+                warnings.append(
+                    f"INCOMPATIBILITY: {reagent!r} + {solvent!r} — {message}"
+                )
+
+        return warnings
+
+    # ── Temperature prior ─────────────────────────────────────────────────────
+
+    # Reaction-type → (typical_low, typical_high, description)
+    _TEMP_PRIORS = {
+        "grignard":            (-78,  0,   "cryogenic addition"),
+        "organolithium":       (-78, -40,  "cryogenic organolithium"),
+        "lda":                 (-78, -40,  "LDA deprotonation"),
+        "ozonolysis":          (-78, -60,  "ozonolysis"),
+        "diazotization":       (  0,  10,  "diazotization"),
+        "diels_alder":         ( 80, 200,  "thermal [4+2]"),
+        "diels-alder":         ( 80, 200,  "thermal [4+2]"),
+        "suzuki":              ( 60, 110,  "Pd-catalysed coupling"),
+        "buchwald_hartwig":    ( 80, 120,  "Pd-amine coupling"),
+        "heck":                ( 80, 130,  "Heck olefination"),
+        "esterification":      ( 60, 140,  "Fischer esterification"),
+        "amide_coupling":      (  0,  50,  "activated amide coupling"),
+        "amidation":           (  0,  50,  "amidation"),
+        "reduction":           (-10,  60,  "hydride reduction"),
+        "hydrogenation":       ( 20,  80,  "catalytic hydrogenation"),
+        "reductive_amination": ( 20,  60,  "reductive amination"),
+        "oxidation":           (-10,  40,  "mild oxidation"),
+        "friedel_crafts":      (  0,  50,  "Friedel-Crafts"),
+        "friedel-crafts":      (  0,  50,  "Friedel-Crafts"),
+        "sn2":                 ( 20,  80,  "SN2 substitution"),
+        "aldol":               (-78,  25,  "aldol condensation"),
+    }
+
+    def predict_temperature(self, reaction: dict) -> dict:
+        """
+        Return a temperature estimate based on reaction type and (optionally)
+        the ML temp_model if it is loaded.
+
+        Returns a dict with keys:
+            temperature_celsius : float  — point estimate
+            low                 : float  — typical lower bound
+            high                : float  — typical upper bound
+            source              : str    — 'ml' | 'prior' | 'default'
+            description         : str    — human-readable note
+        """
+        rxn_type = reaction.get("reaction_type", "").lower()
+
+        # Look up the prior
+        prior_key = next(
+            (k for k in self._TEMP_PRIORS if k in rxn_type), None
+        )
+        if prior_key:
+            lo, hi, desc = self._TEMP_PRIORS[prior_key]
+            mid = (lo + hi) / 2.0
+        else:
+            lo, hi, mid, desc = 20, 80, 25.0, "generic reaction"
+
+        # Try ML model if loaded
+        if self.temp_model is not None:
+            try:
+                features = self.compute_reaction_features(reaction).reshape(1, -1)
+                ml_temp = float(self.temp_model.predict(features)[0])
+                ml_temp = max(-100, min(250, ml_temp))
+                return {
+                    "temperature_celsius": ml_temp,
+                    "low": lo,
+                    "high": hi,
+                    "source": "ml",
+                    "description": desc,
+                }
+            except Exception:
+                pass
+
+        return {
+            "temperature_celsius": mid,
+            "low": lo,
+            "high": hi,
+            "source": "prior",
+            "description": desc,
+        }
+
     def predict_conditions(self, reaction: Dict[str, Any]) -> Dict[str, Any]:
         """Backward-compatible wrapper for existing callers."""
         return self.predict(reaction)
+
 
     def _get_alternatives(self, proba: np.ndarray, encoder: SafeLabelEncoder, top_k: int = 3) -> List[Dict]:
         """Get top alternative options with probabilities."""

@@ -7,20 +7,32 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { Loader2, Beaker, TrendingUp, DollarSign, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Loader2, Beaker, TrendingUp, DollarSign, Clock, AlertCircle, CheckCircle2, History, ChevronDown, ChevronUp } from "lucide-react";
+import SmilesInput from "../components/SmilesInput";
+import MoleculeRenderer from "../components/MoleculeRenderer";
+import useSynthesisStore from "../store/synthesisStore";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const SynthesisPlannerPage = () => {
-  const [targetSmiles, setTargetSmiles] = useState("");
+  // ── Store (shared across pages) ──────────────────────────────
+  const {
+    targetSmiles, setTargetSmiles,
+    optimizeFor,  setOptimizeFor,
+    setPlannedRoutes,
+    setPlanning,
+    planningHistory, clearHistory,
+  } = useSynthesisStore();
+
+  // ── Local UI state ───────────────────────────────────────────
   const [maxSteps, setMaxSteps] = useState(5);
-  const [optimizeFor, setOptimizeFor] = useState("balanced");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [validationResult, setValidationResult] = useState(null);
-  
+  const [showHistory, setShowHistory] = useState(false);
+
   // Phase 4: Advanced mode state
   const [useAdvanced, setUseAdvanced] = useState(false);
   const [scale, setScale] = useState("lab");
@@ -52,15 +64,15 @@ const SynthesisPlannerPage = () => {
     }
 
     setLoading(true);
+    setPlanning(true);
     setError(null);
     setResult(null);
 
     try {
-      // Build URL with advanced parameters
-      const params = useAdvanced 
+      const params = useAdvanced
         ? `?use_advanced=true&scale=${scale}&batch_size_kg=${batchSize}`
         : '';
-      
+
       const response = await axios.post(`${API}/synthesis/plan${params}`, {
         target_smiles: targetSmiles,
         max_steps: maxSteps,
@@ -68,6 +80,8 @@ const SynthesisPlannerPage = () => {
       });
 
       setResult(response.data);
+      // ── Persist to global store so RouteOptimizer can pick up ──
+      setPlannedRoutes(response.data.routes ?? []);
     } catch (e) {
       console.error("Planning error:", e);
       setError(
@@ -75,6 +89,7 @@ const SynthesisPlannerPage = () => {
       );
     } finally {
       setLoading(false);
+      setPlanning(false);
     }
   };
 
@@ -123,77 +138,34 @@ const SynthesisPlannerPage = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* SMILES Input */}
-            <div>
-              <label className="text-white font-medium mb-2 block">
-                SMILES String
-              </label>
-              <div className="flex gap-2">
-                <Input
-                  data-testid="smiles-input"
-                  type="text"
-                  placeholder="e.g., CC(=O)Oc1ccccc1C(=O)O"
-                  value={targetSmiles}
-                  onChange={(e) => {
-                    setTargetSmiles(e.target.value);
-                    setValidationResult(null);
-                  }}
-                  onBlur={() => validateMolecule(targetSmiles)}
-                  className="flex-1 bg-white/20 border-purple-300/50 text-white placeholder:text-purple-300/50"
-                />
-                <Button
-                  data-testid="validate-button"
-                  onClick={() => validateMolecule(targetSmiles)}
-                  variant="outline"
-                  className="bg-purple-500/20 border-purple-400 text-white hover:bg-purple-500/30"
-                >
-                  Validate
-                </Button>
-              </div>
-              
-              {validationResult && (
-                <div className="mt-2">
-                  {validationResult.valid ? (
-                    <Alert className="bg-green-500/20 border-green-500/50">
-                      <CheckCircle2 className="h-4 w-4 text-green-400" />
-                      <AlertDescription className="text-green-200">
-                        Valid SMILES structure
-                      </AlertDescription>
-                    </Alert>
-                  ) : (
-                    <Alert className="bg-red-500/20 border-red-500/50">
-                      <AlertCircle className="h-4 w-4 text-red-400" />
-                      <AlertDescription className="text-red-200">
-                        {validationResult.reason || "Invalid SMILES"}
-                      </AlertDescription>
-                    </Alert>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* SMILES Input — live 2D preview */}
+            <SmilesInput
+              id="smiles-input"
+              label="SMILES String"
+              value={targetSmiles}
+              onChange={(v) => { setTargetSmiles(v); setValidationResult(null); }}
+              placeholder="e.g., CC(=O)Oc1ccccc1C(=O)O"
+              previewSize={200}
+            />
 
-            {/* Example Molecules */}
-            <div>
-              <label className="text-white font-medium mb-2 block">
-                Or try an example:
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {exampleMolecules.map((mol) => (
-                  <Button
-                    key={mol.name}
-                    onClick={() => {
-                      setTargetSmiles(mol.smiles);
-                      validateMolecule(mol.smiles);
-                    }}
-                    variant="outline"
-                    size="sm"
-                    className="bg-purple-500/20 border-purple-400/50 text-purple-200 hover:bg-purple-500/30"
-                  >
-                    {mol.name}
-                  </Button>
-                ))}
+            {/* Server-side validation result (shown after "Validate" or on blur) */}
+            {validationResult && (
+              <div className="mt-1">
+                {validationResult.valid ? (
+                  <Alert className="bg-green-500/20 border-green-500/50">
+                    <CheckCircle2 className="h-4 w-4 text-green-400" />
+                    <AlertDescription className="text-green-200">Valid SMILES structure</AlertDescription>
+                  </Alert>
+                ) : (
+                  <Alert className="bg-red-500/20 border-red-500/50">
+                    <AlertCircle className="h-4 w-4 text-red-400" />
+                    <AlertDescription className="text-red-200">
+                      {validationResult.reason || "Invalid SMILES"}
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
-            </div>
+            )}
 
 
             <Separator className="bg-purple-500/30" />
@@ -303,6 +275,72 @@ const SynthesisPlannerPage = () => {
                 "Generate Synthesis Plan"
               )}
             </Button>
+
+            {/* ── Recent Sessions history panel ─────────────────── */}
+            {planningHistory.length > 0 && (
+              <div>
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)',
+                    borderRadius: 8, padding: '6px 14px', color: '#c4b5fd',
+                    fontSize: 13, cursor: 'pointer', width: '100%',
+                  }}
+                >
+                  <History size={14} />
+                  <span>{planningHistory.length} recent session{planningHistory.length > 1 ? 's' : ''}</span>
+                  <span style={{ marginLeft: 'auto' }}>
+                    {showHistory ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </span>
+                </button>
+
+                {showHistory && (
+                  <div style={{
+                    marginTop: 8, border: '1px solid rgba(139,92,246,0.2)',
+                    borderRadius: 8, overflow: 'hidden',
+                  }}>
+                    {planningHistory.map((session, i) => (
+                      <div
+                        key={i}
+                        onClick={() => {
+                          setTargetSmiles(session.target);
+                          setValidationResult(null);
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '8px 12px',
+                          background: i % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent',
+                          borderBottom: i < planningHistory.length - 1 ? '1px solid rgba(139,92,246,0.1)' : 'none',
+                          cursor: 'pointer',
+                          transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(139,92,246,0.15)'}
+                        onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent'}
+                      >
+                        <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#e9d5ff', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {session.target}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#a78bfa', whiteSpace: 'nowrap' }}>
+                          {session.routeCount} route{session.routeCount !== 1 ? 's' : ''}
+                        </span>
+                        <span style={{ fontSize: 10, color: '#7c3aed', whiteSpace: 'nowrap' }}>
+                          {new Date(session.timestamp).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ padding: '6px 12px', textAlign: 'right' }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); clearHistory(); setShowHistory(false); }}
+                        style={{ fontSize: 11, color: '#f87171', background: 'none', border: 'none', cursor: 'pointer' }}
+                      >
+                        Clear history
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -378,18 +416,21 @@ const SynthesisPlannerPage = () => {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    {/* Starting Materials */}
+                    {/* Starting Materials — with 120px thumbnails */}
                     <div className="mb-4">
-                      <p className="text-purple-300 font-medium mb-2">Starting Materials:</p>
-                      <div className="flex flex-wrap gap-2">
+                      <p className="text-purple-300 font-medium mb-3">Starting Materials:</p>
+                      <div className="flex flex-wrap gap-4">
                         {route.starting_materials.map((sm, idx) => (
-                          <Badge
-                            key={idx}
-                            variant="outline"
-                            className="bg-blue-500/20 border-blue-400/50 text-blue-200 font-mono text-xs"
-                          >
-                            {sm.smiles}
-                          </Badge>
+                          <div key={idx} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                            <MoleculeRenderer smiles={sm.smiles} size={120} />
+                            <Badge
+                              variant="outline"
+                              className="bg-blue-500/20 border-blue-400/50 text-blue-200 font-mono text-xs max-w-[130px] truncate"
+                              title={sm.smiles}
+                            >
+                              {sm.smiles}
+                            </Badge>
+                          </div>
                         ))}
                       </div>
                     </div>

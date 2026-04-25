@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import useSynthesisStore from "../store/synthesisStore";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -80,6 +81,11 @@ const sampleHighRiskRoute = {
 };
 
 const RouteOptimizerPage = () => {
+  // ── Global store ───────────────────────────────────────────
+  const { getSelectedRoute, targetSmiles: storedTarget, clearSession, plannedRoutes } = useSynthesisStore();
+  const [storedRouteBanner, setStoredRouteBanner] = useState(null);
+
+  // ── Local state ─────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState("full");
   const [routeJson, setRouteJson] = useState(
     JSON.stringify(sampleRoute, null, 2)
@@ -93,6 +99,20 @@ const RouteOptimizerPage = () => {
     confidence: true,
     equipment: true,
   });
+
+  // On mount: detect stored route from Synthesis Planner
+  useEffect(() => {
+    const route = getSelectedRoute();
+    if (route && storedTarget) {
+      setStoredRouteBanner({
+        target: storedTarget,
+        steps: route.steps?.length ?? 0,
+        yield: route.overall_yield_percent ?? null,
+        route,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const presets = [
     {
@@ -275,6 +295,53 @@ const RouteOptimizerPage = () => {
           </p>
         </div>
       </div>
+
+      {/* ── Stored-route banner ─────────────────────────────── */}
+      {storedRouteBanner && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          background: 'rgba(139,92,246,0.15)',
+          border: '1px solid rgba(139,92,246,0.4)',
+          borderRadius: 10, padding: '10px 16px', marginBottom: 20,
+        }}>
+          <Beaker size={16} style={{ color: '#c4b5fd', flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 13, color: '#e9d5ff', fontWeight: 600 }}>
+              Route from Synthesis Planner&emsp;
+            </span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#a78bfa' }}>
+              {storedRouteBanner.target.slice(0, 30)}{storedRouteBanner.target.length > 30 ? '…' : ''}
+            </span>
+            <span style={{ fontSize: 12, color: '#7c3aed', marginLeft: 8 }}>
+              &bull; {storedRouteBanner.steps} step{storedRouteBanner.steps !== 1 ? 's' : ''}
+              {storedRouteBanner.yield !== null ? ` • ${storedRouteBanner.yield.toFixed(1)}% yield` : ''}
+            </span>
+          </div>
+          <button
+            onClick={() => {
+              setRouteJson(JSON.stringify(storedRouteBanner.route, null, 2));
+              setStoredRouteBanner(null);
+            }}
+            style={{
+              background: 'rgba(139,92,246,0.3)', border: '1px solid rgba(139,92,246,0.5)',
+              borderRadius: 6, padding: '4px 12px', color: '#e9d5ff',
+              fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            Load into editor
+          </button>
+          <button
+            onClick={() => { clearSession(); setStoredRouteBanner(null); }}
+            style={{
+              background: 'none', border: 'none', color: '#f87171',
+              fontSize: 18, cursor: 'pointer', lineHeight: 1, padding: '2px 4px',
+            }}
+            title="Clear session"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Route Input */}
       <Card className="bg-white/5 backdrop-blur-md border-purple-500/20 mb-6">

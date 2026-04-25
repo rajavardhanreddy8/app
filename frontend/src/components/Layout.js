@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import useSynthesisStore from "../store/synthesisStore";
 import {
   Beaker,
   FlaskConical,
@@ -35,6 +36,8 @@ const navItems = [
 const Layout = ({ children }) => {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const { targetSmiles, plannedRoutes, planningHistory, clearSession } = useSynthesisStore();
+  const hasSession = plannedRoutes.length > 0;
 
   return (
     <div className="flex min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
@@ -89,6 +92,39 @@ const Layout = ({ children }) => {
             );
           })}
         </nav>
+
+        {/* Session status indicator */}
+        {!collapsed && (hasSession || planningHistory.length > 0) && (
+          <div style={{
+            margin: '0 8px 4px', padding: '8px 10px',
+            background: hasSession ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${hasSession ? 'rgba(139,92,246,0.4)' : 'rgba(255,255,255,0.08)'}`,
+            borderRadius: 8, fontSize: 11,
+          }}>
+            {hasSession ? (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                <span style={{ color: '#a78bfa', flexShrink: 0, marginTop: 1 }}>📋</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: '#e9d5ff', fontWeight: 600, marginBottom: 2 }}>Active session</div>
+                  <div style={{ color: '#7c3aed', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {targetSmiles.slice(0, 22)}{targetSmiles.length > 22 ? '…' : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={clearSession}
+                  title="Clear session"
+                  style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0, flexShrink: 0 }}
+                >
+                  ×
+                </button>
+              </div>
+            ) : (
+              <div style={{ color: '#6d28d9', textAlign: 'center' }}>
+                🕐 {planningHistory.length} recent session{planningHistory.length > 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Collapse Toggle */}
         <button

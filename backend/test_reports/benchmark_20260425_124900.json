@@ -1,0 +1,379 @@
+{
+  "timestamp": "2026-04-25T12:49:00.986679",
+  "summary": {
+    "Easy": {
+      "count": 10,
+      "success": 8,
+      "total_steps": 8,
+      "total_time": 0.1489429473876953
+    },
+    "Medium": {
+      "count": 10,
+      "success": 8,
+      "total_steps": 15,
+      "total_time": 2.3510210514068604
+    },
+    "Hard": {
+      "count": 10,
+      "success": 7,
+      "total_steps": 12,
+      "total_time": 11.329952239990234
+    }
+  },
+  "results": {
+    "Easy": {
+      "Aspirin": {
+        "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.0932316780090332,
+        "starting_materials_found": [
+          "CC(=O)Oc1ccccc1",
+          "O=C(O)Cl"
+        ],
+        "success": true,
+        "quality_flags": {
+          "contained_salicylic_acid_or_acetyl_chloride": true
+        }
+      },
+      "Paracetamol": {
+        "smiles": "CC(=O)Nc1ccc(O)cc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.01976156234741211,
+        "starting_materials_found": [
+          "CC(=O)O",
+          "Nc1ccc(O)cc1"
+        ],
+        "success": true,
+        "quality_flags": {
+          "contained_aniline_or_p_aminophenol": true
+        }
+      },
+      "Ethyl acetate": {
+        "smiles": "CCOC(C)=O",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.005844593048095703,
+        "starting_materials_found": [
+          "CCOC(C)O"
+        ],
+        "success": true
+      },
+      "Benzaldehyde": {
+        "smiles": "O=Cc1ccccc1",
+        "num_routes_found": 2,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.003339052200317383,
+        "starting_materials_found": [
+          "OCc1ccccc1"
+        ],
+        "success": true
+      },
+      "Aniline": {
+        "smiles": "Nc1ccccc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.003842592239379883,
+        "starting_materials_found": [
+          "Brc1ccccc1",
+          "N"
+        ],
+        "success": true
+      },
+      "Toluene": {
+        "smiles": "Cc1ccccc1",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.0037326812744140625,
+        "starting_materials_found": [],
+        "success": false
+      },
+      "Phenol": {
+        "smiles": "Oc1ccccc1",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.001043558120727539,
+        "starting_materials_found": [],
+        "success": false
+      },
+      "Acetophenone": {
+        "smiles": "CC(=O)c1ccccc1",
+        "num_routes_found": 2,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.004266023635864258,
+        "starting_materials_found": [
+          "CC(O)c1ccccc1"
+        ],
+        "success": true,
+        "quality_flags": {
+          "involved_friedel_crafts_or_grignard": true
+        }
+      },
+      "Methyl benzoate": {
+        "smiles": "COC(=O)c1ccccc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.010447263717651367,
+        "starting_materials_found": [
+          "CO",
+          "O=C(O)c1ccccc1"
+        ],
+        "success": true
+      },
+      "Benzyl alcohol": {
+        "smiles": "OCc1ccccc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.0034339427947998047,
+        "starting_materials_found": [
+          "O"
+        ],
+        "success": true
+      }
+    },
+    "Medium": {
+      "Ibuprofen": {
+        "smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
+        "num_routes_found": 1,
+        "num_steps_in_best_route": 2,
+        "best_route_score": 80,
+        "time_taken_seconds": 0.024976015090942383,
+        "starting_materials_found": [
+          "CC(C)Cc1ccc([CH](C)[MgH])cc1",
+          "O=CO"
+        ],
+        "success": true
+      },
+      "Lidocaine": {
+        "smiles": "CCN(CC)CC(=O)Nc1c(C)cccc1C",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 2,
+        "best_route_score": 80,
+        "time_taken_seconds": 0.1068425178527832,
+        "starting_materials_found": [
+          "CCNCC",
+          "Cc1cccc(C)c1N",
+          "O=CC(=O)O"
+        ],
+        "success": true
+      },
+      "Atenolol": {
+        "smiles": "CC(C)NCC(O)COc1ccc(CC(N)=O)cc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 3,
+        "best_route_score": 70,
+        "time_taken_seconds": 0.46910786628723145,
+        "starting_materials_found": [
+          "CC(C)NCC(O)CBr",
+          "N",
+          "OCCc1ccc(O)cc1"
+        ],
+        "success": true
+      },
+      "Caffeine": {
+        "smiles": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.001026153564453125,
+        "starting_materials_found": [],
+        "success": false
+      },
+      "Metformin": {
+        "smiles": "CN(C)C(=N)NC(=N)N",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.014461040496826172,
+        "starting_materials_found": [
+          "C=O",
+          "CNC(=N)NC(=N)N"
+        ],
+        "success": true
+      },
+      "Propranolol": {
+        "smiles": "CC(C)NCC(O)COc1cccc2ccccc12",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.08924555778503418,
+        "starting_materials_found": [
+          "CC(C)NCC(O)CBr",
+          "Oc1cccc2ccccc12"
+        ],
+        "success": true
+      },
+      "Diazepam": {
+        "smiles": "CN1C(=O)CN=C(c2ccccc2)c2cc(Cl)ccc21",
+        "num_routes_found": 1,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 1.0304062366485596,
+        "starting_materials_found": [
+          "C=O",
+          "O=C1CN=C(c2ccccc2)c2cc(Cl)ccc2N1"
+        ],
+        "success": true
+      },
+      "Naproxen": {
+        "smiles": "COc1ccc2cc(C(C)C(=O)O)ccc2c1",
+        "num_routes_found": 1,
+        "num_steps_in_best_route": 3,
+        "best_route_score": 70,
+        "time_taken_seconds": 0.08223605155944824,
+        "starting_materials_found": [
+          "CBr",
+          "C[CH]([MgH])c1ccc2cc(O)ccc2c1",
+          "O=CO"
+        ],
+        "success": true
+      },
+      "Ketoprofen": {
+        "smiles": "CC(C(=O)O)c1ccc(cc1)C(=O)c1ccccc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 2,
+        "best_route_score": 80,
+        "time_taken_seconds": 0.09170699119567871,
+        "starting_materials_found": [
+          "CC(CO)c1ccccc1",
+          "O=C(Cl)c1ccccc1"
+        ],
+        "success": true
+      },
+      "Indomethacin": {
+        "smiles": "CC1=C(CC(=O)O)c2cc(OC)ccc2N1C(=O)c1ccc(Cl)cc1",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.4410126209259033,
+        "starting_materials_found": [],
+        "success": false
+      }
+    },
+    "Hard": {
+      "Morphine precursor": {
+        "smiles": "OC1CC2N(C)CCC12",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.06620287895202637,
+        "starting_materials_found": [
+          "CNC1CC(O)C1C",
+          "O=CCC1CCC1O"
+        ],
+        "success": true
+      },
+      "Vitamin C precursor": {
+        "smiles": "OCC(O)C1OC(=O)C(O)=C1O",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.10539507865905762,
+        "starting_materials_found": [
+          "O=CC1OC(=O)C(O)=C1O",
+          "O[CH2][MgH]"
+        ],
+        "success": true
+      },
+      "Testosterone precursor": {
+        "smiles": "CC12CCC3C(C1CCC2=O)CCC4=CC(=O)CCC34C",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 6.126364231109619,
+        "starting_materials_found": [],
+        "success": false
+      },
+      "Ephedrine": {
+        "smiles": "CNC(C)C(O)c1ccccc1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.024454832077026367,
+        "starting_materials_found": [
+          "O"
+        ],
+        "success": true
+      },
+      "Amphetamine precursor": {
+        "smiles": "CC(N)Cc1ccccc1",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.0017178058624267578,
+        "starting_materials_found": [],
+        "success": false
+      },
+      "Taxol fragment": {
+        "smiles": "CC(=O)OC1C(=O)c2ccccc2C(=O)O1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 4,
+        "best_route_score": 60,
+        "time_taken_seconds": 0.596081018447876,
+        "starting_materials_found": [
+          "CC(=O)O",
+          "O=C(O)c1ccccc1",
+          "OCO"
+        ],
+        "success": true
+      },
+      "Camptothecin fragment": {
+        "smiles": "OC(=O)c1ccc2[nH]c3ccccc3c2c1",
+        "num_routes_found": 1,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.03913545608520508,
+        "starting_materials_found": [
+          "O"
+        ],
+        "success": true
+      },
+      "Quinine skeleton": {
+        "smiles": "COc1ccc2nccc(C(O)C3CC=CCN3C)c2c1",
+        "num_routes_found": 3,
+        "num_steps_in_best_route": 3,
+        "best_route_score": 70,
+        "time_taken_seconds": 3.471870183944702,
+        "starting_materials_found": [
+          "C=O",
+          "CC=CCN",
+          "CC=CC[C](=O)[MgH]",
+          "COc1ccc2nccc(C=O)c2c1"
+        ],
+        "success": true
+      },
+      "Resveratrol": {
+        "smiles": "Oc1ccc(cc1)/C=C/c1cc(O)cc(O)c1",
+        "num_routes_found": 2,
+        "num_steps_in_best_route": 1,
+        "best_route_score": 90,
+        "time_taken_seconds": 0.12126541137695312,
+        "starting_materials_found": [
+          "C=Cc1cc(O)cc(O)c1",
+          "Oc1ccc(Br)cc1"
+        ],
+        "success": true
+      },
+      "Capsaicin": {
+        "smiles": "COc1cc(CNC(=O)CCCC/C=C/CC(C)C)ccc1O",
+        "num_routes_found": 0,
+        "num_steps_in_best_route": 0,
+        "best_route_score": 0.0,
+        "time_taken_seconds": 0.7774653434753418,
+        "starting_materials_found": [],
+        "success": false
+      }
+    }
+  }
+}

@@ -5,12 +5,31 @@ from services.cost_database import CostDatabase
 logger = logging.getLogger(__name__)
 
 class AdvancedCostModel:
-    """Comprehensive cost modeling including energy, time, waste, and recovery."""
+    """Comprehensive cost modeling with economy of scale — fixed + variable cost split."""
     
     def __init__(self):
         self.basic_cost_db = CostDatabase()
         
-        # Cost factors (USD)
+        # ── Fixed costs per batch (do NOT scale with batch size) ──
+        self.fixed_costs = {
+            'lab': {
+                'equipment_setup': 200.0,
+                'qc_testing': 50.0,
+                'regulatory_documentation': 0.0,
+            },
+            'pilot': {
+                'equipment_setup': 2000.0,
+                'qc_testing': 500.0,
+                'regulatory_documentation': 1000.0,
+            },
+            'industrial': {
+                'equipment_setup': 15000.0,
+                'qc_testing': 2000.0,
+                'regulatory_documentation': 5000.0,
+            },
+        }
+        
+        # ── Energy costs (USD) — variable, scale with batch ──
         self.energy_costs = {
             'electricity_per_kwh': 0.12,
             'natural_gas_per_mmbtu': 3.50,
@@ -18,12 +37,16 @@ class AdvancedCostModel:
             'cooling_water_per_m3': 0.50
         }
         
+        # ── Labor costs (variable portion scales with reaction time) ──
         self.labor_costs = {
             'lab_technician_per_hour': 35.0,
             'chemist_per_hour': 75.0,
             'engineer_per_hour': 120.0,
             'operator_per_hour': 45.0
         }
+        
+        # Fixed setup time per batch — 2 hours regardless of batch size
+        self.labor_setup_hours = 2.0
         
         self.equipment_costs = {
             'lab_hourly_rate': 25.0,
@@ -38,6 +61,16 @@ class AdvancedCostModel:
             'hazardous_per_kg': 10.00
         }
     
+    # ── Tiered reagent pricing ──
+    def _reagent_discount_factor(self, batch_size_kg: float) -> float:
+        """Volume discount for reagent purchasing."""
+        if batch_size_kg > 100.0:
+            return 0.25   # Industrial contract pricing
+        elif batch_size_kg >= 1.0:
+            return 0.60   # Bulk discount
+        else:
+            return 1.00   # Full catalog price
+    
     def calculate_total_cost(
         self,
         reaction: Dict,
@@ -45,8 +78,18 @@ class AdvancedCostModel:
         batch_size_kg: float = 0.1,
         include_recovery: bool = False
     ) -> Dict:
-        """Calculate comprehensive reaction cost including reagents, energy, time, labor, equipment, waste."""
+        """Calculate comprehensive reaction cost including fixed + variable components."""
+        scale = scale.lower()
+        
+        # ── Fixed costs ──
+        fixed = self.fixed_costs.get(scale, self.fixed_costs['lab'])
+        fixed_total = sum(fixed.values())
+        
         costs = {
+            'fixed_equipment_setup': fixed['equipment_setup'],
+            'fixed_qc_testing': fixed['qc_testing'],
+            'fixed_regulatory': fixed['regulatory_documentation'],
+            'fixed_total': fixed_total,
             'reagent_cost': 0.0,
             'energy_cost': 0.0,
             'labor_cost': 0.0,
@@ -56,47 +99,46 @@ class AdvancedCostModel:
             'total_cost': 0.0
         }
         
-        # 1. Reagent costs
+        # ── 1. Reagent costs (variable, with tiered pricing) ──
+        discount = self._reagent_discount_factor(batch_size_kg)
         reagents = reaction.get('reactants', []) + reaction.get('catalysts', [])
         for reagent_smiles in reagents:
-            if reagent_smiles and reagent_smiles.strip():  # Skip empty strings
+            if reagent_smiles and reagent_smiles.strip():
                 cost_per_gram = self.basic_cost_db.get_reagent_cost(reagent_smiles)
                 if cost_per_gram:
-                    # Assume 1:1 molar ratio for simplicity, scale by batch size
-                    # Use 10% of batch as reagent amount (more realistic)
-                    costs['reagent_cost'] += cost_per_gram * (batch_size_kg * 1000) * 0.10
+                    costs['reagent_cost'] += cost_per_gram * (batch_size_kg * 1000) * 0.10 * discount
         
-        # 2. Energy costs
+        # ── 2. Energy costs (variable, scales with batch) ──
         temperature = reaction.get('temperature_c', 25.0)
         reaction_time_hours = reaction.get('time_hours', 2.0)
         costs['energy_cost'] = self._calculate_energy_cost(
             temperature, reaction_time_hours, batch_size_kg, scale
         )
         
-        # 3. Labor costs
+        # ── 3. Labor costs (fixed setup + variable time) ──
         costs['labor_cost'] = self._calculate_labor_cost(
             reaction_time_hours, scale
         )
         
-        # 4. Equipment costs
+        # ── 4. Equipment costs (variable, hourly usage) ──
         costs['equipment_cost'] = self._calculate_equipment_cost(
             reaction_time_hours, scale
         )
         
-        # 5. Waste disposal
+        # ── 5. Waste disposal (variable, scales with batch) ──
         solvents = reaction.get('solvents', [])
         costs['waste_disposal_cost'] = self._calculate_waste_cost(
             solvents, batch_size_kg
         )
         
-        # 6. Recovery savings (if enabled)
+        # ── 6. Recovery savings (if enabled) ──
         if include_recovery:
             costs['recovery_savings'] = self._calculate_recovery_savings(
                 reaction, batch_size_kg
             )
         
-        # Total cost (ensure recovery doesn't exceed actual costs)
-        gross_cost = (
+        # ── Total cost ──
+        variable_total = (
             costs['reagent_cost'] +
             costs['energy_cost'] +
             costs['labor_cost'] +
@@ -104,13 +146,42 @@ class AdvancedCostModel:
             costs['waste_disposal_cost']
         )
         
-        # Cap recovery savings at 80% of gross cost to ensure positive total
+        gross_cost = fixed_total + variable_total
+        
+        # Cap recovery savings at 80% of gross cost
         max_recovery = gross_cost * 0.80
         costs['recovery_savings'] = min(costs['recovery_savings'], max_recovery)
         
+        costs['variable_total'] = variable_total
         costs['total_cost'] = gross_cost - costs['recovery_savings']
         
         return costs
+    
+    def cost_per_kg_product(
+        self,
+        reaction: Dict,
+        scale: str = 'lab',
+        batch_size_kg: float = 0.1
+    ) -> Dict:
+        """
+        Return total cost / (batch_size_kg × overall_yield/100).
+
+        This is what users actually care about — the cost to produce 1 kg of
+        final product after accounting for yield losses.
+        """
+        costs = self.calculate_total_cost(reaction, scale, batch_size_kg, include_recovery=True)
+        
+        overall_yield_pct = reaction.get('overall_yield', 75.0)
+        product_kg = batch_size_kg * (overall_yield_pct / 100.0)
+        
+        cost_per_kg = costs['total_cost'] / product_kg if product_kg > 0 else float('inf')
+        
+        return {
+            **costs,
+            'overall_yield_pct': overall_yield_pct,
+            'product_kg': round(product_kg, 4),
+            'cost_per_kg_product': round(cost_per_kg, 2),
+        }
     
     def _calculate_energy_cost(
         self,
@@ -152,10 +223,10 @@ class AdvancedCostModel:
         reaction_time_hours: float,
         scale: str
     ) -> float:
-        """Calculate labor costs."""
+        """Calculate labor costs including fixed 2-hour setup per batch."""
         if scale == 'lab':
             hourly_rate = self.labor_costs['chemist_per_hour']
-            labor_multiplier = 1.5  # Includes setup/cleanup
+            labor_multiplier = 1.5  # Includes cleanup
         elif scale == 'pilot':
             hourly_rate = self.labor_costs['chemist_per_hour']
             labor_multiplier = 2.0
@@ -163,7 +234,9 @@ class AdvancedCostModel:
             hourly_rate = self.labor_costs['operator_per_hour']
             labor_multiplier = 1.2
         
-        return hourly_rate * reaction_time_hours * labor_multiplier
+        # Fixed setup time + variable reaction time
+        total_hours = self.labor_setup_hours + (reaction_time_hours * labor_multiplier)
+        return hourly_rate * total_hours
     
     def _calculate_equipment_cost(
         self,
@@ -226,7 +299,7 @@ class AdvancedCostModel:
         for solv_smiles in solvents:
             if solv_smiles and solv_smiles.strip():
                 cost_per_gram = self.basic_cost_db.get_reagent_cost(solv_smiles) or 0.10
-                solvent_amount_g = batch_size_kg * 1000 * 0.5  # 0.5:1 ratio (reduced from 2:1)
+                solvent_amount_g = batch_size_kg * 1000 * 0.5  # 0.5:1 ratio
                 recovery_rate = 0.60
                 savings += cost_per_gram * solvent_amount_g * recovery_rate
         
@@ -273,34 +346,30 @@ if __name__ == "__main__":
     
     model = AdvancedCostModel()
     
-    # Test reaction
+    # Test reaction — esterification
     test_reaction = {
-        'reactants': ['c1ccccc1', 'CCO'],
-        'products': ['c1ccccc1O'],
-        'catalysts': ['[Pd]'],
+        'reactants': ['CC(=O)O', 'CCO'],
+        'products': ['CC(=O)OCC'],
+        'catalysts': [''],
         'solvents': ['C1CCOC1'],
         'temperature_c': 80.0,
-        'time_hours': 4.0
+        'time_hours': 4.0,
+        'overall_yield': 75.0,
     }
     
-    print("\n=== Advanced Cost Modeling Test ===")
-    print(f"Reaction: Phenol synthesis")
+    print("\n" + "=" * 70)
+    print("Economy of Scale — Cost per kg Product (Esterification)")
+    print("=" * 70)
+    print(f"{'Scale':<15} {'Batch kg':<12} {'Fixed $':<12} {'Variable $':<14} {'Total $':<12} {'$/kg product':<14}")
+    print("-" * 70)
     
-    # Lab scale
-    lab_cost = model.calculate_total_cost(test_reaction, scale='lab', batch_size_kg=0.1)
-    print(f"\nLab Scale (100g batch):")
-    for key, value in lab_cost.items():
-        print(f"  {key}: ${value:.2f}")
+    for scale, batch in [('lab', 0.1), ('pilot', 10.0), ('industrial', 1000.0)]:
+        r = model.cost_per_kg_product(test_reaction, scale, batch)
+        print(
+            f"{scale:<15} {batch:<12.1f} "
+            f"${r['fixed_total']:<11.2f} ${r['variable_total']:<13.2f} "
+            f"${r['total_cost']:<11.2f} ${r['cost_per_kg_product']:<13.2f}"
+        )
     
-    # Pilot scale with recovery
-    pilot_cost = model.calculate_total_cost(
-        test_reaction, 
-        scale='pilot', 
-        batch_size_kg=10.0, 
-        include_recovery=True
-    )
-    print(f"\nPilot Scale (10kg batch) with Recovery:")
-    for key, value in pilot_cost.items():
-        print(f"  {key}: ${value:.2f}")
-    
-    print("\n✓ Advanced Cost Model Test Complete")
+    print("=" * 70)
+    print("✓ Advanced Cost Model Test Complete")
