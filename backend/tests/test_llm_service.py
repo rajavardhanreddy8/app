@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("DEMO_MODE", "true")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-placeholder")
 
-from services.claude_service import ClaudeService
+from services.claude_service import ClaudeService, SynthesisRouteSchema
 
 
 # ── Schema tests ──────────────────────────────────────────────────
@@ -78,6 +78,83 @@ class TestSynthesisRouteSchema:
         for field in ("reactants", "product", "reaction_type"):
             assert field in step, f"Missing field: {field}"
 
+    def test_step_requires_quantity_fields(self):
+        """Strict planner schema should reject vague step payloads."""
+        with pytest.raises(Exception):
+            SynthesisRouteSchema.model_validate({
+                "routes": [{
+                    "starting_materials": ["CCO"],
+                    "steps": [{
+                        "reactants": ["CCO"],
+                        "product": "CC=O",
+                        "reaction_type": "oxidation",
+                        "estimated_yield": 80,
+                        "estimated_cost_usd": 25,
+                        "conditions": {},
+                    }],
+                    "overall_yield": 80,
+                    "total_cost_usd": 25,
+                    "score": 70,
+                    "notes": "too vague",
+                    "batch_scale": "0.10 mol",
+                    "cost_drivers": [],
+                    "feasibility_notes": [],
+                }]
+            })
+
+
+class TestOpenRouterConfig:
+    def test_openrouter_defaults_ignore_stale_legacy_model(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "false")
+        monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setenv("OPENROUTER_MODEL", "tencent/hy3-preview:free")
+        monkeypatch.delenv("OPENROUTER_PLANNER_MODELS", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        svc = ClaudeService(api_key=None)
+
+        assert svc.demo_mode is False
+        assert svc.openrouter_model == "google/gemini-2.5-flash-lite"
+        assert "tencent/hy3-preview:free" not in svc.openrouter_planner_models
+
+    def test_openrouter_works_without_anthropic_key(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "false")
+        monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        svc = ClaudeService(api_key=None)
+
+        status = svc.status_snapshot()
+        assert status["health"] == "live"
+        assert status["provider"] == "openrouter"
+
+    def test_openrouter_uses_json_schema_response_format(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "false")
+        monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        svc = ClaudeService(api_key=None)
+        response_format = svc._openrouter_response_format()
+
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["strict"] is True
+        assert response_format["json_schema"]["schema"]["type"] == "object"
+        assert "routes" in response_format["json_schema"]["schema"]["properties"]
+
+    def test_openrouter_fallback_extra_body(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "false")
+        monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        svc = ClaudeService(api_key=None)
+        extra_body = svc._openrouter_extra_body(svc.openrouter_planner_models)
+
+        assert extra_body["provider"]["require_parameters"] is True
+        assert extra_body["provider"]["sort"] == "price"
+        assert extra_body["models"] == ["deepseek/deepseek-v4-flash", "openai/gpt-5-nano"]
+
 
 # ── Demo mode tests ───────────────────────────────────────────────
 
@@ -91,6 +168,8 @@ class TestClaudeServiceDemoMode:
 
     def test_demo_mode_without_api_key(self):
         old = os.environ.pop("ANTHROPIC_API_KEY", None)
+        old_openrouter = os.environ.pop("OPENROUTER_API_KEY", None)
+        old_provider = os.environ.pop("LLM_PROVIDER", None)
         os.environ["DEMO_MODE"] = "false"
         try:
             svc = ClaudeService(api_key=None)
@@ -98,6 +177,10 @@ class TestClaudeServiceDemoMode:
         finally:
             if old:
                 os.environ["ANTHROPIC_API_KEY"] = old
+            if old_openrouter:
+                os.environ["OPENROUTER_API_KEY"] = old_openrouter
+            if old_provider:
+                os.environ["LLM_PROVIDER"] = old_provider
             os.environ["DEMO_MODE"] = "true"
 
     def test_demo_routes_usage_tokens(self):

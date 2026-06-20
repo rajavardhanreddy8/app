@@ -52,15 +52,22 @@ function getRDKit() {
   return rdkitReady;
 }
 
-const MoleculeRenderer = ({ smiles, size = 200, className = "" }) => {
+const MoleculeRenderer = ({
+  smiles,
+  size = 200,
+  className = "",
+  onError,
+  onSuccess,
+  onUnavailable,
+}) => {
   const [svg, setSvg] = useState(null);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const prevSmiles = useRef(null);
 
   useEffect(() => {
     if (!smiles || !smiles.trim()) {
-      setSvg(null); setError(false); setLoading(false);
+      setSvg(null); setError(null); setLoading(false);
       prevSmiles.current = null;
       return;
     }
@@ -68,7 +75,7 @@ const MoleculeRenderer = ({ smiles, size = 200, className = "" }) => {
     prevSmiles.current = smiles;
 
     setLoading(true);
-    setError(false);
+    setError(null);
     setSvg(null);
 
     getRDKit()
@@ -80,17 +87,22 @@ const MoleculeRenderer = ({ smiles, size = 200, className = "" }) => {
           mol = null;
         }
         if (!mol || !mol.is_valid()) {
-          setError(true);
+          setError("invalid");
+          onError?.();
         } else {
           // get_svg() with options object is most reliable
           const opts = JSON.stringify({ width: size, height: size });
           setSvg(mol.get_svg(opts));
+          onSuccess?.();
         }
         if (mol) mol.delete(); // free WASM memory
       })
-      .catch(() => setError(true))
+      .catch(() => {
+        setError("unavailable");
+        onUnavailable?.();
+      })
       .finally(() => setLoading(false));
-  }, [smiles, size]);
+  }, [smiles, size, onError, onSuccess, onUnavailable]);
 
   if (!smiles || !smiles.trim()) return null;
 
@@ -115,17 +127,21 @@ const MoleculeRenderer = ({ smiles, size = 200, className = "" }) => {
   }
 
   if (error) {
+    const unavailable = error === "unavailable";
     return (
       <div
         className={`molecule-error flex items-center gap-1 ${className}`}
         style={{
-          fontSize: 12, color: "#f87171", padding: "6px 10px",
-          background: "rgba(239,68,68,0.1)", borderRadius: 6,
-          border: "1px solid rgba(239,68,68,0.3)"
+          fontSize: 12,
+          color: unavailable ? "#fbbf24" : "#f87171",
+          padding: "6px 10px",
+          background: unavailable ? "rgba(245,158,11,0.1)" : "rgba(239,68,68,0.1)",
+          borderRadius: 6,
+          border: unavailable ? "1px solid rgba(245,158,11,0.3)" : "1px solid rgba(239,68,68,0.3)"
         }}
       >
-        <span>⚠</span>
-        <span>Invalid SMILES</span>
+        <span>!</span>
+        <span>{unavailable ? "Preview unavailable" : "Invalid SMILES"}</span>
       </div>
     );
   }

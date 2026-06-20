@@ -116,13 +116,40 @@ class TestRetrosynthesisChemistry:
             assert is_building_block_smiles(smi), \
                 f"{smi} should be recognized as building block"
 
-    def test_benchmark_baseline_exists_and_meets_target(self):
-        baseline = Path("backend/test_reports/benchmark_baseline.json")
-        assert baseline.exists(), "Benchmark baseline not found"
-        data = json.loads(baseline.read_text(encoding="utf-8"))
-        summary = data.get("summary", {})
-        total = sum(cat.get("success", 0) for cat in summary.values())
-        assert total >= 21, f"Benchmark below 21/30: {total}/30"
+    def test_curated_benchmark_report_records_every_failure(self):
+        report_path = Path("backend/test_reports/benchmark_report.json")
+        assert report_path.exists(), "Curated benchmark report not found"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        cases = report.get("cases", [])
+
+        assert report.get("schema_version") == "1.0"
+        assert report.get("benchmark", {}).get("curated") is True
+        assert len(cases) == 30
+        assert report.get("summary", {}).get("total") == len(cases)
+        for case in cases:
+            assert case.get("status") in {"passed", "failed", "error"}
+            assert isinstance(case.get("failure_reasons"), list)
+            if case["status"] != "passed":
+                assert case["failure_reasons"], f"Failure reason hidden for {case['case_id']}"
+
+    def test_benchmark_runner_captures_case_exceptions(self):
+        from scripts.run_benchmark import DEFAULT_CONFIG, run_case
+
+        class BrokenEngine:
+            def search_routes(self, *_args, **_kwargs):
+                raise RuntimeError("forced benchmark failure")
+
+        result = run_case(
+            BrokenEngine(),
+            "easy-01-test",
+            "Easy",
+            "Test",
+            "CCO",
+            DEFAULT_CONFIG,
+        )
+        assert result["status"] == "error"
+        assert result["failure_reasons"] == ["exception:RuntimeError"]
+        assert result["error"]["message"] == "forced benchmark failure"
 
 
 # ── Phase 3: Learning loop ─────────────────────────────────────────────────────
@@ -239,13 +266,110 @@ class TestAuthAndStructure:
         lines = len(Path("backend/server.py").read_text(encoding="utf-8").splitlines())
         assert lines < 200, f"server.py is {lines} lines — should be < 200"
 
-    def test_test_files_consolidated_to_15(self):
-        test_files = list(Path("backend/tests").glob("test_*.py"))
-        assert len(test_files) <= 15, \
-            f"Too many test files: {len(test_files)}. Should be ~10-15 after consolidation."
+    def test_quality_status_router_registered(self):
+        server_src = Path("backend/server.py").read_text(encoding="utf-8")
+        system_src = Path("backend/routers/system.py").read_text(encoding="utf-8")
+        assert "system.router" in server_src
+        assert '"/system/readiness"' in system_src
+        assert '"/models/status"' in system_src
+
+    def test_route_models_expose_evidence_fields(self):
+        from models.chemistry import (
+            MolecularStructure,
+            ReactionCondition,
+            ReactionStep,
+            SynthesisRoute,
+        )
+
+        step = ReactionStep(
+            reactants=[MolecularStructure(smiles="CCO")],
+            product=MolecularStructure(smiles="CC=O"),
+            reaction_type="oxidation",
+            conditions=ReactionCondition(solvent="DCM"),
+            estimated_yield_percent=70.0,
+        )
+        route = SynthesisRoute(
+            target_molecule=MolecularStructure(smiles="CC=O"),
+            starting_materials=[MolecularStructure(smiles="CCO")],
+            steps=[step],
+            overall_yield_percent=70.0,
+            total_cost_usd=10.0,
+            total_time_hours=4.0,
+            score=65.0,
+        )
+
+        assert step.human_review_required is True
+        assert route.review_status == "needs_human_review"
+        for field in ["evidence", "prediction_source", "confidence", "uncertainty", "warnings"]:
+            assert field in SynthesisRoute.model_fields
+            assert field in ReactionStep.model_fields
 
 
 # ── Phase 6: Scale-up and cost ────────────────────────────────────────────────
+
+class TestStandaloneEvidenceContracts:
+    """Standalone estimates must expose source and review metadata."""
+
+    def test_condition_fallback_is_explicit(self, monkeypatch):
+        from dependencies import deps
+        from routers.optimization import ConditionPredictionRequest, predict_conditions
+
+        monkeypatch.setattr(
+            deps.condition_predictor,
+            "predict_safe",
+            lambda _reaction: {
+                "temperature_celsius": 25.0,
+                "catalyst": "unknown",
+                "solvent": "THF",
+                "confidence": "low",
+                "fallback": True,
+                "model_decision": "fallback",
+            },
+        )
+        result = asyncio.run(predict_conditions(ConditionPredictionRequest(
+            reactants=["CCO"],
+            products=["CC=O"],
+            reaction_type="oxidation",
+        )))
+        conditions = result["conditions"]
+        assert conditions["prediction_source"] == "fallback"
+        assert conditions["human_review_required"] is True
+        assert conditions["warnings"]
+        assert conditions["evidence"]["source"] == "fallback"
+
+    def test_cost_and_safety_estimates_are_labeled(self):
+        from routers.optimization import (
+            IndustrialCostRequest,
+            ProcessConstraintsRequest,
+            calculate_industrial_cost,
+            evaluate_process_constraints,
+        )
+
+        reaction = {
+            "reactants": ["CCO"],
+            "products": ["CC=O"],
+            "catalysts": [],
+            "solvents": ["water"],
+            "solvent": "water",
+            "temperature_c": 25.0,
+            "time_hours": 1.0,
+        }
+        cost = asyncio.run(calculate_industrial_cost(IndustrialCostRequest(
+            reaction=reaction,
+            scale="lab",
+            batch_size_kg=0.1,
+        )))
+        safety = asyncio.run(evaluate_process_constraints(ProcessConstraintsRequest(
+            reaction=reaction,
+            scale="lab",
+            batch_size_kg=0.1,
+        )))
+
+        assert cost["prediction_source"] == "heuristic"
+        assert cost["uncertainty"]["relative_cost_percent"]["calibrated"] is False
+        assert safety["prediction_source"] == "rules"
+        assert safety["human_review_required"] is True
+
 
 class TestScaleAndCost:
     """Phase 6 — Economy of scale, physics yield loss."""

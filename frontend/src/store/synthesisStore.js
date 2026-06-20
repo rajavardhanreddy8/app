@@ -94,6 +94,8 @@ const useSynthesisStore = create(
         targetSmiles:    state.targetSmiles,
         optimizeFor:     state.optimizeFor,
         planningHistory: state.planningHistory,
+        plannedRoutes:   state.plannedRoutes,
+        selectedRouteIndex: state.selectedRouteIndex,
       }),
     }
   )

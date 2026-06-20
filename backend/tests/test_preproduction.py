@@ -379,3 +379,158 @@ class TestDeploymentReadiness:
         model = Path("backend/models/yield_model.pkl")
         assert model.exists(), "yield_model.pkl missing"
         assert model.stat().st_size > 10_000, "yield_model.pkl looks empty"
+
+
+class TestPhase11CatalystIntelligence:
+
+    def test_grignard_never_returns_pd_catalyst(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        r = cp.predict_conditions({"reaction_type": "grignard"})
+        assert "Pd" not in str(r["catalyst"]), f"Grignard returned Pd catalyst: {r['catalyst']}"
+
+    def test_reductive_amination_prefers_biocatalysis(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        r = cp.predict_conditions({"reaction_type": "reductive_amination"})
+        assert r["hierarchy_level"] <= 2, "Reductive amination should use biocatalysis or heterogeneous"
+
+    def test_suzuki_flags_pd_removal_required(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        r = cp.predict_conditions({"reaction_type": "suzuki"})
+        assert r.get("pd_removal_required") is True, "Suzuki with homogeneous Pd must flag pd_removal_required"
+
+    def test_boc_deprotection_uses_tfa_not_pd(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        r = cp.predict_conditions({"reaction_type": "boc_deprotection"})
+        assert "TFA" in str(r["catalyst"]) or "HCl" in str(r["catalyst"]), \
+            f"Boc deprotection should use TFA/HCl: {r['catalyst']}"
+        assert "Pd" not in str(r["catalyst"])
+
+    def test_catalyst_cost_per_kg_calculated(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        r = cp.predict_conditions({"reaction_type": "hydrogenation"})
+        assert "catalyst_cost_per_kg" in r, "Missing catalyst cost"
+        assert r["catalyst_cost_per_kg"] >= 0
+
+    def test_predict_safe_calls_predict_conditions(self):
+        from services.condition_predictor import ConditionPredictor
+        import inspect
+        cp = ConditionPredictor()
+        src = inspect.getsource(cp.predict_safe)
+        assert "predict_conditions" in src, "predict_safe must delegate to predict_conditions"
+
+    def test_hierarchy_level_in_response(self):
+        from services.condition_predictor import ConditionPredictor
+        cp = ConditionPredictor()
+        for rxn in ["suzuki", "hydrogenation", "reductive_amination"]:
+            r = cp.predict_conditions({"reaction_type": rxn})
+            assert "hierarchy_level" in r, f"{rxn} response missing hierarchy_level"
+            assert r["hierarchy_level"] in (0, 1, 2, 3, 4)
+
+
+class TestPhase13ImpurityTracking:
+
+    def test_impurity_tracker_file_exists(self):
+        assert Path("backend/services/impurity_tracker.py").exists()
+
+    def test_wittig_flags_triphenylphosphine_oxide(self):
+        from services.impurity_tracker import ImpurityTracker
+        tracker = ImpurityTracker()
+        result = tracker.analyze_step({"reaction_type": "wittig"})
+        byproduct_names = [b["name"] for b in result["byproducts"]]
+        assert any("phosphine" in n.lower() or "oxide" in n.lower() for n in byproduct_names), \
+            "Wittig step must flag Ph3P=O as byproduct"
+
+    def test_nabh3cn_flags_cyanide_gti(self):
+        from services.impurity_tracker import ImpurityTracker
+        tracker = ImpurityTracker()
+        result = tracker.analyze_step({"reaction_type": "reductive_amination_nabh3cn"})
+        assert result.get("gti_notes") is not None or any(b.get("gti_alert") for b in result["byproducts"]), \
+            "NaBH3CN reductive amination must flag cyanide GTI risk"
+
+    def test_route_propagation_returns_accumulated_impurities(self):
+        from services.impurity_tracker import ImpurityTracker
+        tracker = ImpurityTracker()
+        mock_route = {"steps": [{"reaction_type": "wittig"}, {"reaction_type": "hydrogenation"}]}
+        result = tracker.propagate_route(mock_route)
+        assert "accumulated_impurities" in result
+        assert "overall_impurity_risk" in result
+        assert "ich_m7_assessment_required" in result
+
+    def test_high_gti_route_has_high_risk_rating(self):
+        from services.impurity_tracker import ImpurityTracker
+        tracker = ImpurityTracker()
+        mock_route = {
+            "steps": [
+                {"reaction_type": "reductive_amination_nabh3cn"},
+                {"reaction_type": "buchwald_hartwig"},
+            ]
+        }
+        result = tracker.propagate_route(mock_route)
+        assert result["overall_impurity_risk"] in ("medium", "high"), \
+            "Route with GTI-risk steps should not be rated low risk"
+
+
+class TestUnifiedScoring:
+
+    def test_green_mode_penalizes_high_pmi_routes(self):
+        from services.enhanced_route_scorer import EnhancedRouteScorer
+        scorer = EnhancedRouteScorer()
+        good_route = {
+            "overall_yield": 80, "total_cost_usd": 5000, "num_steps": 3,
+            "steps": [], "green_metrics": {"pmi": 8, "atom_economy_percent": 75, "convergence_score": 0.8},
+            "impurity_analysis": {"overall_impurity_risk": "low", "ich_m7_assessment_required": False},
+        }
+        bad_route = {
+            "overall_yield": 82, "total_cost_usd": 4800, "num_steps": 3,
+            "steps": [], "green_metrics": {"pmi": 60, "atom_economy_percent": 35, "convergence_score": 0.1},
+            "impurity_analysis": {"overall_impurity_risk": "low", "ich_m7_assessment_required": False},
+        }
+        assert scorer.score_route_unified(good_route, optimize_for="green")["score"] > \
+            scorer.score_route_unified(bad_route, optimize_for="green")["score"], \
+            "Green mode must penalize high PMI routes"
+
+    def test_regulatory_mode_penalizes_gti_routes(self):
+        from services.enhanced_route_scorer import EnhancedRouteScorer
+        scorer = EnhancedRouteScorer()
+        clean = {
+            "overall_yield": 75, "total_cost_usd": 8000, "num_steps": 4,
+            "steps": [], "green_metrics": {"pmi": 25, "atom_economy_percent": 60, "convergence_score": 0.5},
+            "impurity_analysis": {"overall_impurity_risk": "low", "ich_m7_assessment_required": False},
+        }
+        risky = {
+            "overall_yield": 85, "total_cost_usd": 6000, "num_steps": 3,
+            "steps": [], "green_metrics": {"pmi": 20, "atom_economy_percent": 65, "convergence_score": 0.5},
+            "impurity_analysis": {"overall_impurity_risk": "high", "ich_m7_assessment_required": True},
+        }
+        assert scorer.score_route_unified(clean, optimize_for="regulatory")["score"] > \
+            scorer.score_route_unified(risky, optimize_for="regulatory")["score"], \
+            "Regulatory mode must penalize GTI-risk routes over higher-yield ones"
+
+    def test_score_breakdown_has_all_9_dimensions(self):
+        from services.enhanced_route_scorer import EnhancedRouteScorer
+        scorer = EnhancedRouteScorer()
+        route = {
+            "overall_yield": 80, "total_cost_usd": 5000, "num_steps": 3,
+            "steps": [], "green_metrics": {"pmi": 20, "atom_economy_percent": 65, "convergence_score": 0.5},
+            "impurity_analysis": {"overall_impurity_risk": "low", "ich_m7_assessment_required": False},
+        }
+        dims = scorer.score_route_unified(route, optimize_for="balanced")["dimension_scores"]
+        for dim in ["yield", "cost", "steps", "time", "pmi", "atom_economy", "convergence", "catalyst_burden", "impurity_risk"]:
+            assert dim in dims, f"Missing dimension in score breakdown: {dim}"
+
+    def test_improvement_targets_provided(self):
+        from services.enhanced_route_scorer import EnhancedRouteScorer
+        scorer = EnhancedRouteScorer()
+        route = {
+            "overall_yield": 55, "total_cost_usd": 50000, "num_steps": 8,
+            "steps": [{"conditions": {"catalyst": "Pd(PPh3)4"}} for _ in range(3)],
+            "green_metrics": {"pmi": 80, "atom_economy_percent": 30, "convergence_score": 0.0},
+            "impurity_analysis": {"overall_impurity_risk": "high", "ich_m7_assessment_required": True},
+        }
+        result = scorer.score_route_unified(route, optimize_for="balanced")
+        assert len(result.get("improvement_targets", [])) > 0, "Poor routes must return improvement_targets"

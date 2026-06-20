@@ -30,6 +30,7 @@ os.environ.setdefault("DB_NAME", "test_db")
 from services.yield_predictor import YieldPredictor
 
 MODEL_PATH = Path("backend/models/yield_model.pkl")
+MULTI_MODEL_PATH = Path("backend/models/yield_model_multi.pkl")
 TRAINING_DATA_PATH = Path("backend/data/training_reactions.json")
 TRAIN_SCRIPT = Path("backend/scripts/train_yield_model.py")
 
@@ -81,8 +82,8 @@ class TestTrainingDataExists:
 class TestModelLoads:
 
     def test_model_file_exists(self):
-        assert MODEL_PATH.exists(), \
-            "backend/models/yield_model.pkl not found \u2014 run train_yield_model.py"
+        assert MODEL_PATH.exists() or MULTI_MODEL_PATH.exists(), \
+            "Yield model bundle not found \u2014 run train_yield_model.py"
 
     def test_model_loads_without_error(self):
         p = YieldPredictor()
@@ -92,7 +93,7 @@ class TestModelLoads:
     def test_model_is_not_none_after_load(self):
         p = YieldPredictor()
         p.load_model()
-        assert p.model is not None
+        assert p.model is not None or p.multi_model is not None
 
 
 # \u2500\u2500 Inference correctness \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -179,6 +180,16 @@ class TestInference:
         except Exception as e:
             pytest.fail(f"predict() raised on invalid SMILES: {e}")
 
+    def test_predict_with_uncertainty_includes_multi_model_fields(self, predictor):
+        result = predictor.predict_with_uncertainty({
+            "reactants": ["CCO", "CC(=O)O"],
+            "products": ["CCOC(C)=O"],
+            "reaction_type": "esterification",
+            "temperature_celsius": 80.0,
+        })
+        for key in ("individual_predictions", "ensemble_prediction", "best_model", "model_metrics", "model_decision"):
+            assert key in result
+
 
 # \u2500\u2500 models/__init__.py singleton \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -200,6 +211,6 @@ class TestModelsSingleton:
     def test_singleton_has_model_loaded(self):
         from models import get_yield_predictor
         p = get_yield_predictor()
-        if MODEL_PATH.exists():
-            assert p.model is not None, \
-                "Singleton should have model loaded if pkl file exists"
+        if MODEL_PATH.exists() or MULTI_MODEL_PATH.exists():
+            assert p.model is not None or getattr(p, "multi_model", None) is not None, \
+                "Singleton should have model loaded if a yield model bundle exists"

@@ -4,8 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from dependencies import verify_api_key
-import dependencies as deps
+from dependencies import deps, verify_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["molecule"], dependencies=[Depends(verify_api_key)])

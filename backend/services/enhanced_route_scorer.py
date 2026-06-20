@@ -1,365 +1,337 @@
 import logging
-from typing import List, Dict, Any, Optional
-from models.chemistry import SynthesisRoute, ReactionStep
-from models import get_yield_predictor
-from services.cost_database import CostDatabase
+from typing import Any, Dict, List, Optional
+
 import numpy as np
+
+from models import get_yield_predictor
+from models.chemistry import ReactionStep, SynthesisRoute
+from services.cost_database import CostDatabase
 
 logger = logging.getLogger(__name__)
 
+
+MODE_WEIGHTS = {
+    "yield": {
+        "yield": 0.35, "cost": 0.10, "steps": 0.05, "time": 0.05,
+        "pmi": 0.10, "atom_economy": 0.10, "convergence": 0.05,
+        "catalyst_burden": 0.10, "impurity_risk": 0.10,
+    },
+    "cost": {
+        "yield": 0.15, "cost": 0.30, "steps": 0.05, "time": 0.05,
+        "pmi": 0.15, "atom_economy": 0.05, "convergence": 0.10,
+        "catalyst_burden": 0.10, "impurity_risk": 0.05,
+    },
+    "green": {
+        "yield": 0.10, "cost": 0.10, "steps": 0.05, "time": 0.05,
+        "pmi": 0.30, "atom_economy": 0.20, "convergence": 0.10,
+        "catalyst_burden": 0.05, "impurity_risk": 0.05,
+    },
+    "regulatory": {
+        "yield": 0.15, "cost": 0.10, "steps": 0.10, "time": 0.05,
+        "pmi": 0.05, "atom_economy": 0.05, "convergence": 0.05,
+        "catalyst_burden": 0.15, "impurity_risk": 0.30,
+    },
+    "balanced": {
+        "yield": 0.20, "cost": 0.15, "steps": 0.10, "time": 0.05,
+        "pmi": 0.12, "atom_economy": 0.08, "convergence": 0.10,
+        "catalyst_burden": 0.10, "impurity_risk": 0.10,
+    },
+}
+
+
 class EnhancedRouteScorer:
-    """
-    Advanced multi-objective route scoring with ML predictions.
-    
-    Supports PHARMA MODE for pharmaceutical synthesis where ≥99% yield is mandatory.
-    """
-    
+    """Nine-dimension route scorer for process chemistry route selection."""
+
     def __init__(self, pharma_mode: bool = False):
-        """
-        Initialize scorer with optional pharma mode.
-        
-        Args:
-            pharma_mode: If True, enforce pharma-grade yield requirements (≥99%)
-        """
         self.yield_predictor = get_yield_predictor()
         self.cost_database = CostDatabase()
-        
-        # Pharma mode settings
         self.pharma_mode = pharma_mode
-        self.pharma_min_yield = 99.0  # Minimum acceptable yield for pharma
-        
-        # Try to load ML model
-        self.ml_available = self.yield_predictor.model is not None
+        self.pharma_min_yield = 99.0
+        self.ml_available = getattr(self.yield_predictor, "model", None) is not None
         if not self.ml_available:
-            # Try loading if not there
-            self.yield_predictor.load_model()
-            self.ml_available = self.yield_predictor.model is not None
-            
+            try:
+                self.yield_predictor.load_model()
+                self.ml_available = getattr(self.yield_predictor, "model", None) is not None
+            except Exception:
+                self.ml_available = False
         if not self.ml_available:
             logger.warning("ML yield predictor not available, using heuristics")
-        
-        if pharma_mode:
-            logger.info("EnhancedRouteScorer initialized in PHARMA MODE (≥99% yield enforced)")
-    
+
     def predict_step_yield(self, step: ReactionStep) -> float:
-        """Predict yield for a reaction step using ML or heuristics."""
         if self.ml_available:
             try:
-                # Prepare reaction dict for ML model
                 reaction_dict = {
-                    'reactants': [r.smiles for r in step.reactants],
-                    'products': [step.product.smiles],
-                    'reaction_type': step.reaction_type,
-                    'temperature_celsius': step.conditions.temperature_celsius if step.conditions else 25,
-                    'catalyst': step.conditions.catalyst if step.conditions else None,
-                    'solvent': step.conditions.solvent if step.conditions else None,
+                    "reactants": [r.smiles for r in step.reactants],
+                    "products": [step.product.smiles],
+                    "reaction_type": step.reaction_type,
+                    "temperature_celsius": step.conditions.temperature_celsius if step.conditions else 25,
+                    "catalyst": step.conditions.catalyst if step.conditions else None,
+                    "solvent": step.conditions.solvent if step.conditions else None,
                 }
-                
                 predicted_yield = self.yield_predictor.predict(reaction_dict)
                 if predicted_yield is not None:
-                    return predicted_yield
-                    
-            except Exception as e:
-                logger.debug(f"ML prediction failed: {str(e)}, using heuristic")
-        
-        # Fallback to heuristic
-        return step.estimated_yield_percent
-    
+                    return float(predicted_yield)
+            except Exception as exc:
+                logger.debug(f"ML prediction failed: {exc}, using heuristic")
+        return float(step.estimated_yield_percent)
+
     def calculate_step_cost(self, step: ReactionStep, target_mass_mg: float = 100.0) -> float:
-        """Calculate cost for a reaction step."""
         try:
-            reactant_smiles = [r.smiles for r in step.reactants]
-            
             costs = self.cost_database.calculate_reaction_cost(
-                reactants=reactant_smiles,
+                reactants=[r.smiles for r in step.reactants],
                 reagents=[],
                 catalyst=step.conditions.catalyst if step.conditions else None,
                 solvent=step.conditions.solvent if step.conditions else None,
-                target_mass_mg=target_mass_mg
+                target_mass_mg=target_mass_mg,
             )
-            
-            return costs['total_cost']
-            
-        except Exception as e:
-            logger.debug(f"Cost calculation failed: {str(e)}")
-            return step.estimated_cost_usd or 50.0
-    
-    def score_route(
-        self, 
-        route: SynthesisRoute, 
+            return float(costs["total_cost"])
+        except Exception as exc:
+            logger.debug(f"Cost calculation failed: {exc}")
+            return float(step.estimated_cost_usd or 50.0)
+
+    def score_route_unified(
+        self,
+        route: Dict[str, Any],
         optimize_for: str = "balanced",
-        weights: Optional[Dict[str, float]] = None
+        stage: str = "phase_2",
+        weights_override: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
-        """
-        Score a synthesis route using multi-objective optimization.
-        
-        In PHARMA MODE: Routes with <99% yield are rejected (score = -inf).
-        """
-        
-        # Calculate metrics
-        metrics = self._calculate_route_metrics(route)
-        
-        # PHARMA MODE: Enforce minimum yield requirement
-        if self.pharma_mode:
-            overall_yield = metrics['overall_yield']
-            if overall_yield < self.pharma_min_yield:
-                logger.warning(
-                    f"pharma_mode_rejection: yield={overall_yield:.2f}% < {self.pharma_min_yield}% (REJECTED)"
-                )
-                return {
-                    'score': float('-inf'),
-                    'metrics': metrics,
-                    'weights': {},
-                    'optimization_goal': 'pharma',
-                    'rejected': True,
-                    'rejection_reason': f'Yield {overall_yield:.2f}% below pharma minimum {self.pharma_min_yield}%'
-                }
-            
-            # Add loss-based cost (Pharma principle: yield loss = material waste)
-            raw_material_cost = metrics['total_cost'] * 0.50  # Assume 50% is raw materials
-            loss_cost = (1.0 - (overall_yield / 100.0)) * raw_material_cost
-            metrics['loss_cost'] = loss_cost
-            metrics['adjusted_total_cost'] = metrics['total_cost'] + loss_cost
-            
-            logger.info(
-                f"pharma_scoring: yield={overall_yield:.2f}%, "
-                f"loss_cost=${loss_cost:.2f}, steps={metrics['num_steps']}"
-            )
-        
-        # Determine weights based on optimization goal
-        if weights is None:
-            weights = self._get_optimization_weights(optimize_for)
-        
-        # Calculate score
-        score = self._calculate_weighted_score(metrics, weights)
-        
-        return {
-            'score': score,
-            'metrics': metrics,
-            'weights': weights,
-            'optimization_goal': optimize_for,
-            'rejected': False
+        route_dict = self._route_to_dict(route)
+        optimize_for = optimize_for if optimize_for in MODE_WEIGHTS else "balanced"
+        weights = dict(MODE_WEIGHTS[optimize_for])
+        if weights_override:
+            weights.update(weights_override)
+
+        scores = self._dimension_raw_scores(route_dict)
+        weighted = {
+            dim: scores[dim] * weights.get(dim, 0.0)
+            for dim in MODE_WEIGHTS["balanced"]
         }
-    
-    def _calculate_route_metrics(self, route: SynthesisRoute) -> Dict[str, float]:
-        """Calculate all metrics for a route."""
-        
-        # Step-by-step yield predictions
-        step_yields = []
-        step_costs = []
-        total_time = 0.0
-        
-        for step in route.steps:
-            # Predict yield with ML
-            predicted_yield = self.predict_step_yield(step)
-            step_yields.append(predicted_yield)
-            
-            # Calculate cost
-            step_cost = self.calculate_step_cost(step)
-            step_costs.append(step_cost)
-            
-            # Accumulate time
-            if step.conditions and step.conditions.time_hours:
-                total_time += step.conditions.time_hours
-        
-        # Overall yield (product of steps)
-        overall_yield = np.prod([y/100.0 for y in step_yields]) * 100.0 if step_yields else 0.0
-        
-        # Total cost
-        total_cost = sum(step_costs)
-        
-        # Number of steps (fewer is better)
-        num_steps = len(route.steps)
-        
-        # Complexity score (0-100, lower is better)
-        complexity = self._calculate_complexity(route)
-        
-        # Feasibility score (0-100, higher is better)
-        feasibility = self._calculate_feasibility(route, step_yields)
-        
-        return {
-            'overall_yield': float(overall_yield),
-            'total_cost': float(total_cost),
-            'num_steps': num_steps,
-            'total_time_hours': float(total_time),
-            'complexity': float(complexity),
-            'feasibility': float(feasibility),
-            'step_yields': [float(y) for y in step_yields],
-            'step_costs': [float(c) for c in step_costs]
+        raw_score = sum(weighted.values())
+        final_score = round(raw_score * 100.0, 2)
+        dimension_scores = {
+            dim: {
+                "raw": round(scores[dim], 3),
+                "weighted": round(weighted[dim], 3),
+                "contribution_pct": round((weighted[dim] / raw_score) * 100) if raw_score > 0 else 0,
+            }
+            for dim in weighted
         }
-    
-    def _calculate_complexity(self, route: SynthesisRoute) -> float:
-        """Calculate route complexity score (0-100)."""
-        complexity = 0.0
-        
-        # Step count penalty
-        complexity += len(route.steps) * 10
-        
-        # Difficult reaction penalty
-        for step in route.steps:
-            if step.difficulty == "high" or step.difficulty == "difficult":
-                complexity += 15
-            elif step.difficulty == "moderate":
-                complexity += 5
-        
-        # Special conditions penalty
-        for step in route.steps:
-            if step.conditions:
-                if step.conditions.temperature_celsius:
-                    if step.conditions.temperature_celsius < 0 or step.conditions.temperature_celsius > 100:
-                        complexity += 10
-                if step.conditions.catalyst and 'pd' in step.conditions.catalyst.lower():
-                    complexity += 5  # Expensive catalysts add complexity
-        
-        return min(100, complexity)
-    
-    def _calculate_feasibility(self, route: SynthesisRoute, predicted_yields: List[float]) -> float:
-        """Calculate route feasibility score (0-100)."""
-        feasibility = 100.0
-        
-        # Yield confidence
-        avg_yield = np.mean(predicted_yields) if predicted_yields else 0
-        if avg_yield < 50:
-            feasibility -= 20
-        elif avg_yield < 70:
-            feasibility -= 10
-        
-        # Step count penalty
-        if len(route.steps) > 5:
-            feasibility -= (len(route.steps) - 5) * 10
-        
-        # Check for very difficult steps
-        difficult_steps = sum(1 for step in route.steps if step.difficulty == "high")
-        feasibility -= difficult_steps * 15
-        
-        return max(0, feasibility)
-    
-    def _get_optimization_weights(self, optimize_for: str) -> Dict[str, float]:
-        """Get weights for different optimization goals."""
-        
-        if optimize_for == "yield":
+        return {
+            "score": final_score,
+            "optimize_for": optimize_for,
+            "stage": stage,
+            "weights": weights,
+            "dimension_scores": dimension_scores,
+            "improvement_targets": self._improvement_targets(route_dict),
+        }
+
+    def score_route(
+        self,
+        route: SynthesisRoute,
+        optimize_for: str = "balanced",
+        weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        route_dict = self._route_to_dict(route)
+        overall_yield = route_dict.get("overall_yield", 0.0)
+        if self.pharma_mode and overall_yield < self.pharma_min_yield:
             return {
-                'yield': 0.70,
-                'cost': 0.10,
-                'steps': 0.10,
-                'time': 0.05,
-                'feasibility': 0.05
-            }
-        elif optimize_for == "cost":
-            return {
-                'yield': 0.20,
-                'cost': 0.50,
-                'steps': 0.15,
-                'time': 0.10,
-                'feasibility': 0.05
-            }
-        elif optimize_for == "time":
-            return {
-                'yield': 0.20,
-                'cost': 0.15,
-                'steps': 0.40,
-                'time': 0.20,
-                'feasibility': 0.05
-            }
-        else:  # balanced
-            return {
-                'yield': 0.35,
-                'cost': 0.25,
-                'steps': 0.20,
-                'time': 0.10,
-                'feasibility': 0.10
+                "score": float("-inf"),
+                "metrics": self._legacy_metrics(route_dict),
+                "weights": {},
+                "optimization_goal": "pharma",
+                "rejected": True,
+                "rejection_reason": f"Yield {overall_yield:.2f}% below pharma minimum {self.pharma_min_yield}%",
             }
 
-    def _get_weights(self, optimize_for: str) -> Dict[str, float]:
-        """Alias for _get_optimization_weights (used in tests and external callers)."""
-        return self._get_optimization_weights(optimize_for)
-    
-    def _calculate_weighted_score(self, metrics: Dict[str, float], weights: Dict[str, float]) -> float:
-        """Calculate final weighted score (0-100)."""
-        
-        # Normalize metrics to 0-100 scale
-        yield_score = metrics['overall_yield']  # Already 0-100
-        cost_score = max(0, 100 - (metrics['total_cost'] / 5))  # $5 per step = 80 score
-        steps_score = max(0, 100 - (metrics['num_steps'] * 15))  # 1 step = 85, 5 steps = 25
-        time_score = max(0, 100 - (metrics['total_time_hours'] / 2))  # 2 hours per step
-        feasibility_score = metrics['feasibility']  # Already 0-100
-        
-        # Calculate weighted sum
-        score = (
-            yield_score * weights['yield'] +
-            cost_score * weights['cost'] +
-            steps_score * weights['steps'] +
-            time_score * weights['time'] +
-            feasibility_score * weights['feasibility']
-        )
-        
-        return float(min(100, max(0, score)))
-    
-    def compare_routes(
-        self, 
-        routes: List[SynthesisRoute], 
-        optimize_for: str = "balanced"
-    ) -> List[Dict[str, Any]]:
-        """
-        Compare multiple synthesis routes and return them ranked by score.
-        
-        In PHARMA MODE: Routes with <99% yield are automatically rejected.
-        """
-        
+        result = self.score_route_unified(route_dict, optimize_for=optimize_for, weights_override=weights)
+        result.update({
+            "metrics": self._legacy_metrics(route_dict),
+            "optimization_goal": optimize_for,
+            "rejected": False,
+        })
+        return result
+
+    def compare_routes(self, routes: List[SynthesisRoute], optimize_for: str = "balanced") -> List[Dict[str, Any]]:
         scored_routes = []
-        rejected_count = 0
-        
         for route in routes:
             try:
                 result = self.score_route(route, optimize_for)
-                
-                # Skip rejected routes (pharma mode)
-                if result.get('rejected', False):
-                    rejected_count += 1
-                    logger.debug(f"Route rejected: {result.get('rejection_reason')}")
+                if result.get("rejected"):
                     continue
-                
                 scored_routes.append({
-                    'route': route,
-                    'score': result['score'],
-                    'metrics': result['metrics']
+                    "route": route,
+                    "score": result["score"],
+                    "metrics": result["metrics"],
+                    "dimension_scores": result.get("dimension_scores", {}),
+                    "improvement_targets": result.get("improvement_targets", []),
                 })
-            except Exception as e:
-                logger.error(f"Failed to score route: {str(e)}")
-                # Include route with default score (not in pharma mode)
+            except Exception as exc:
+                logger.error(f"Failed to score route: {exc}")
                 if not self.pharma_mode:
-                    scored_routes.append({
-                        'route': route,
-                        'score': route.score or 0.0,
-                        'metrics': {
-                            'overall_yield': route.overall_yield_percent,
-                            'total_cost': route.total_cost_usd,
-                            'num_steps': len(route.steps),
-                            'total_time_hours': route.total_time_hours,
-                            'complexity': 50.0,
-                            'feasibility': 50.0
-                        }
-                    })
-        
-        # Sort by score descending
-        scored_routes.sort(key=lambda x: x['score'], reverse=True)
+                    scored_routes.append({"route": route, "score": getattr(route, "score", 0.0) or 0.0, "metrics": {}})
 
-        # Bug 4 fix: deduplicate routes with identical (score, overall_yield, total_cost)
-        seen_keys: set = set()
+        scored_routes.sort(key=lambda item: item["score"], reverse=True)
+        seen = set()
         unique_routes = []
         for entry in scored_routes:
-            m = entry['metrics']
+            metrics = entry.get("metrics", {})
             key = (
-                round(entry['score'], 2),
-                round(m.get('overall_yield', 0), 1),
-                round(m.get('total_cost', 0), 0),
+                round(entry.get("score", 0), 2),
+                round(metrics.get("overall_yield", 0), 1),
+                round(metrics.get("total_cost", 0), 0),
             )
-            if key not in seen_keys:
-                seen_keys.add(key)
+            if key not in seen:
+                seen.add(key)
                 unique_routes.append(entry)
-        scored_routes = unique_routes
+        return unique_routes
 
-        if self.pharma_mode and rejected_count > 0:
-            logger.warning(f"pharma_mode: {rejected_count} routes rejected for yield <{self.pharma_min_yield}%")
-        
-        return scored_routes
+    def _dimension_raw_scores(self, route: Dict[str, Any]) -> Dict[str, float]:
+        overall_yield = self._num(route.get("overall_yield", route.get("overall_yield_percent", 0.0)))
+        total_cost = self._num(route.get("total_cost_usd", route.get("total_cost", 0.0)))
+        num_steps = int(self._num(route.get("num_steps", len(route.get("steps", [])))))
+        total_hours = self._total_hours(route)
+        green = route.get("green_metrics") or {}
+        pmi = self._num(green.get("pmi", 50.0))
+        ae = self._num(green.get("atom_economy_percent", 50.0))
+        convergence = max(0.0, min(1.0, self._num(green.get("convergence_score", 0.0))))
+
+        pd_steps = sum(
+            1 for step in route.get("steps", [])
+            if "Pd" in self._step_catalyst(step)
+            and "/C" not in self._step_catalyst(step)
+            and "Al2O3" not in self._step_catalyst(step)
+        )
+        bio_steps = sum(
+            1 for step in route.get("steps", [])
+            if any(token in self._step_catalyst(step).lower() for token in ["lipase", "transaminase", "kred", "enzyme"])
+        )
+        impurity = route.get("impurity_analysis") or {}
+        risk = str(impurity.get("overall_impurity_risk", "medium")).lower()
+        risk_map = {"low": 1.0, "medium": 0.6, "high": 0.2}
+        gti_penalty = -0.3 if impurity.get("ich_m7_assessment_required") else 0.0
+
+        return {
+            "yield": max(0.0, min(1.0, overall_yield / 100.0)),
+            "cost": max(0.0, 1.0 - (total_cost / 100000.0)),
+            "steps": max(0.0, 1.0 - (num_steps / 10.0)),
+            "time": max(0.0, 1.0 - (total_hours / 48.0)),
+            "pmi": self._pmi_score(pmi),
+            "atom_economy": max(0.0, min(1.0, ae / 100.0)),
+            "convergence": convergence,
+            "catalyst_burden": min(1.0, max(0.0, 1.0 - (pd_steps * 0.2)) + (bio_steps * 0.1)),
+            "impurity_risk": max(0.0, min(1.0, risk_map.get(risk, 0.5) + gti_penalty)),
+        }
+
+    def _route_to_dict(self, route: Any) -> Dict[str, Any]:
+        if isinstance(route, dict):
+            result = dict(route)
+            result["overall_yield"] = self._num(result.get("overall_yield", result.get("overall_yield_percent", 0.0)))
+            result["total_cost_usd"] = self._num(result.get("total_cost_usd", result.get("total_cost", 0.0)))
+            result["num_steps"] = int(self._num(result.get("num_steps", len(result.get("steps", [])))))
+            return result
+
+        steps = getattr(route, "steps", []) or []
+        step_yields = [self.predict_step_yield(step) for step in steps]
+        step_costs = [self.calculate_step_cost(step) for step in steps]
+        total_time = sum(
+            float(step.conditions.time_hours or 0.0)
+            for step in steps
+            if getattr(step, "conditions", None)
+        )
+        overall_yield = float(np.prod([value / 100.0 for value in step_yields]) * 100.0) if step_yields else 0.0
+        return {
+            "overall_yield": overall_yield,
+            "overall_yield_percent": overall_yield,
+            "total_cost_usd": float(sum(step_costs)),
+            "total_cost": float(sum(step_costs)),
+            "num_steps": len(steps),
+            "total_time_hours": total_time,
+            "steps": [self._step_to_dict(step) for step in steps],
+            "green_metrics": getattr(route, "green_metrics", {}) or {},
+            "impurity_analysis": getattr(route, "impurity_analysis", {}) or {},
+        }
+
+    def _legacy_metrics(self, route: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "overall_yield": route.get("overall_yield", route.get("overall_yield_percent", 0.0)),
+            "total_cost": route.get("total_cost_usd", route.get("total_cost", 0.0)),
+            "num_steps": route.get("num_steps", len(route.get("steps", []))),
+            "total_time_hours": self._total_hours(route),
+            "complexity": max(0.0, 100.0 - (self._dimension_raw_scores(route)["steps"] * 100.0)),
+            "feasibility": round(self._dimension_raw_scores(route)["yield"] * 100.0, 2),
+        }
+
+    def _step_to_dict(self, step: ReactionStep) -> Dict[str, Any]:
+        return {
+            "reaction_type": step.reaction_type,
+            "estimated_yield_percent": step.estimated_yield_percent,
+            "estimated_cost_usd": step.estimated_cost_usd,
+            "difficulty": step.difficulty,
+            "conditions": {
+                "catalyst": step.conditions.catalyst if step.conditions else None,
+                "solvent": step.conditions.solvent if step.conditions else None,
+                "temperature_celsius": step.conditions.temperature_celsius if step.conditions else None,
+                "time_hours": step.conditions.time_hours if step.conditions else None,
+            },
+        }
+
+    def _total_hours(self, route: Dict[str, Any]) -> float:
+        if route.get("total_time_hours") is not None:
+            return self._num(route.get("total_time_hours"))
+        total = 0.0
+        for step in route.get("steps", []):
+            conditions = step.get("conditions", {}) if isinstance(step, dict) else {}
+            total += self._num(conditions.get("time_hours", step.get("time_hours", 0.0) if isinstance(step, dict) else 0.0))
+        return total
+
+    def _step_catalyst(self, step: Dict[str, Any]) -> str:
+        if not isinstance(step, dict):
+            return ""
+        conditions = step.get("conditions") or {}
+        if isinstance(conditions, dict):
+            return str(conditions.get("catalyst", step.get("catalyst", "")) or "")
+        return str(step.get("catalyst", "") or "")
+
+    def _pmi_score(self, pmi: float) -> float:
+        if pmi < 10:
+            return 1.0
+        if pmi < 25:
+            return 0.7
+        if pmi < 50:
+            return 0.4
+        return 0.1
+
+    def _improvement_targets(self, route: Dict[str, Any]) -> List[str]:
+        targets = []
+        green = route.get("green_metrics") or {}
+        pmi = self._num(green.get("pmi", 50))
+        ae = self._num(green.get("atom_economy_percent", 50))
+        if pmi >= 25:
+            targets.append(f"Reduce PMI from {pmi:g} to <25 by solvent recovery or telescoping")
+        if ae < 50:
+            targets.append(f"Improve atom economy from {ae:g}% by replacing stoichiometric reagents")
+        for index, step in enumerate(route.get("steps", []), start=1):
+            catalyst = self._step_catalyst(step)
+            if "Pd" in catalyst and "/C" not in catalyst and "Al2O3" not in catalyst:
+                targets.append(f"Replace homogeneous Pd in Step {index} with a heterogeneous or earth-abundant option")
+                break
+        impurity = route.get("impurity_analysis") or {}
+        if impurity.get("ich_m7_assessment_required"):
+            targets.append("Add purge controls for ICH M7 GTI risk before route filing")
+        if route.get("num_steps", len(route.get("steps", []))) > 6:
+            targets.append("Reduce step count or telescope compatible consecutive steps")
+        return targets
+
+    def _get_optimization_weights(self, optimize_for: str) -> Dict[str, float]:
+        return dict(MODE_WEIGHTS.get(optimize_for, MODE_WEIGHTS["balanced"]))
+
+    def _get_weights(self, optimize_for: str) -> Dict[str, float]:
+        return self._get_optimization_weights(optimize_for)
+
+    @staticmethod
+    def _num(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0

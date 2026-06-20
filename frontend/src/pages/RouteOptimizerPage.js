@@ -22,8 +22,19 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
+  DollarSign,
+  TrendingUp,
 } from "lucide-react";
 import useSynthesisStore from "../store/synthesisStore";
+import {
+  formatMoney,
+  getIndustryFlags,
+  getRouteCost,
+  getRouteInputs,
+  getRouteProduct,
+  getRouteYield,
+  getStepSummary,
+} from "../utils/routeChemistry";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -32,6 +43,10 @@ const sampleRoute = {
   steps: [
     {
       reaction_type: "esterification",
+      reactants: [{ smiles: "CC(=O)O" }, { smiles: "c1ccc(O)cc1" }],
+      product: { smiles: "CC(=O)Oc1ccccc1" },
+      estimated_yield_percent: 88,
+      estimated_cost_usd: 85,
       conditions: {
         catalyst: "H2SO4",
         solvent: "DCM",
@@ -41,6 +56,10 @@ const sampleRoute = {
     },
     {
       reaction_type: "suzuki_coupling",
+      reactants: [{ smiles: "Brc1ccccc1" }, { smiles: "c1ccc(B(O)O)cc1" }],
+      product: { smiles: "c1ccc(-c2ccccc2)cc1" },
+      estimated_yield_percent: 82,
+      estimated_cost_usd: 265,
       conditions: {
         catalyst: "Pd(PPh3)4",
         solvent: "DMF",
@@ -58,6 +77,10 @@ const sampleHighRiskRoute = {
   steps: [
     {
       reaction_type: "pyrolysis",
+      reactants: [{ smiles: "CC(=O)c1ccccc1" }],
+      product: { smiles: "C=Cc1ccccc1" },
+      estimated_yield_percent: 45,
+      estimated_cost_usd: 420,
       conditions: {
         catalyst: "AlCl3",
         solvent: "benzene",
@@ -67,6 +90,10 @@ const sampleHighRiskRoute = {
     },
     {
       reaction_type: "high_pressure_hydrogenation",
+      reactants: [{ smiles: "C=Cc1ccccc1" }, { smiles: "[H][H]" }],
+      product: { smiles: "CCc1ccccc1" },
+      estimated_yield_percent: 88,
+      estimated_cost_usd: 380,
       conditions: {
         catalyst: "Pd/C",
         solvent: "THF",
@@ -93,6 +120,7 @@ const RouteOptimizerPage = () => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [showJsonEditor, setShowJsonEditor] = useState(false);
   const [expandedSection, setExpandedSection] = useState({
     mutations: true,
     constraints: true,
@@ -104,6 +132,7 @@ const RouteOptimizerPage = () => {
   useEffect(() => {
     const route = getSelectedRoute();
     if (route && storedTarget) {
+      setRouteJson(JSON.stringify(route, null, 2));
       setStoredRouteBanner({
         target: storedTarget,
         steps: route.steps?.length ?? 0,
@@ -124,6 +153,22 @@ const RouteOptimizerPage = () => {
       route: sampleHighRiskRoute,
     },
   ];
+
+  const currentRoute = (() => {
+    try {
+      return JSON.parse(routeJson);
+    } catch {
+      return null;
+    }
+  })();
+  const routeInputs = currentRoute ? getRouteInputs(currentRoute) : [];
+  const routeFlags = currentRoute ? getIndustryFlags(currentRoute) : [];
+
+  const loadRoute = (route) => {
+    setRouteJson(JSON.stringify(route, null, 2));
+    setResult(null);
+    setError(null);
+  };
 
   const runFullOptimization = async () => {
     setLoading(true);
@@ -319,7 +364,7 @@ const RouteOptimizerPage = () => {
           </div>
           <button
             onClick={() => {
-              setRouteJson(JSON.stringify(storedRouteBanner.route, null, 2));
+              loadRoute(storedRouteBanner.route);
               setStoredRouteBanner(null);
             }}
             style={{
@@ -347,12 +392,17 @@ const RouteOptimizerPage = () => {
       <Card className="bg-white/5 backdrop-blur-md border-purple-500/20 mb-6">
         <CardContent className="p-6 space-y-4">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-white font-medium">Route (JSON)</label>
+            <div>
+              <label className="text-white font-medium">Route to Optimize</label>
+              <p className="text-purple-300/60 text-xs mt-1">
+                Loaded from Synthesis Planner when available. Quantities are planning estimates on a 0.10 mol basis.
+              </p>
+            </div>
             <div className="flex gap-2">
               {presets.map((p) => (
                 <Button
                   key={p.name}
-                  onClick={() => setRouteJson(JSON.stringify(p.route, null, 2))}
+                  onClick={() => loadRoute(p.route)}
                   variant="outline"
                   size="sm"
                   className="bg-purple-500/10 border-purple-500/30 text-purple-200 text-xs"
@@ -362,12 +412,119 @@ const RouteOptimizerPage = () => {
               ))}
             </div>
           </div>
-          <textarea
-            value={routeJson}
-            onChange={(e) => setRouteJson(e.target.value)}
-            rows={10}
-            className="w-full bg-white/10 border border-purple-500/30 rounded-md p-3 text-white font-mono text-xs"
-          />
+
+          {currentRoute ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Product</p>
+                  <p className="text-white font-mono text-sm truncate" title={getRouteProduct(currentRoute)}>
+                    {getRouteProduct(currentRoute)}
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Total Yield</p>
+                  <p className="text-green-400 font-bold text-xl">
+                    <TrendingUp className="w-4 h-4 inline mr-1" />
+                    {getRouteYield(currentRoute)?.toFixed(1) ?? "?"}%
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Estimated Cost</p>
+                  <p className="text-yellow-400 font-bold text-xl">
+                    <DollarSign className="w-4 h-4 inline mr-1" />
+                    {formatMoney(getRouteCost(currentRoute))}
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Steps</p>
+                  <p className="text-white font-bold text-xl">{currentRoute.steps?.length || currentRoute.num_steps || 0}</p>
+                </div>
+              </div>
+
+              {routeFlags.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {routeFlags.map((flag, idx) => (
+                    <div
+                      key={idx}
+                      className={`rounded-lg p-3 border ${
+                        flag.level === "critical"
+                          ? "bg-red-500/10 border-red-500/30"
+                          : "bg-yellow-500/10 border-yellow-500/30"
+                      }`}
+                    >
+                      <p className={flag.level === "critical" ? "text-red-200 font-semibold text-sm" : "text-yellow-200 font-semibold text-sm"}>
+                        {flag.label}
+                      </p>
+                      <p className="text-purple-100/70 text-xs mt-1">{flag.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-slate-900/30 border border-purple-500/20 rounded-lg overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs text-purple-300/70 border-b border-purple-500/20">
+                  <span className="col-span-1">Step</span>
+                  <span className="col-span-2">Role</span>
+                  <span className="col-span-4">Material</span>
+                  <span className="col-span-2">Equiv</span>
+                  <span className="col-span-3">Estimated amount</span>
+                </div>
+                {routeInputs.map((row, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs border-b border-purple-500/10 last:border-b-0">
+                    <span className="col-span-1 text-white">{row.step}</span>
+                    <span className="col-span-2 text-purple-200">{row.role}</span>
+                    <span className="col-span-4 text-white font-mono truncate" title={row.name}>{row.name}</span>
+                    <span className="col-span-2 text-blue-200">{row.equivalents ?? "-"}</span>
+                    <span className="col-span-3 text-green-200">{row.amount}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                {(currentRoute.steps || []).map((step, idx) => (
+                  <div key={idx} className="bg-white/5 rounded-lg p-3 border border-purple-500/20">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-white font-semibold text-sm">Step {idx + 1}: {step.reaction_type}</p>
+                      <Badge className="bg-green-600/20 text-green-300">
+                        {step.estimated_yield_percent ?? step.estimated_yield ?? "?"}% yield
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {getStepSummary(step).map((item) => (
+                        <Badge key={item} variant="outline" className="border-purple-500/30 text-purple-200 text-xs">
+                          {item}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                type="button"
+                onClick={() => setShowJsonEditor(!showJsonEditor)}
+                variant="outline"
+                className="bg-white/5 border-purple-500/30 text-purple-200"
+              >
+                {showJsonEditor ? "Hide JSON editor" : "Advanced: edit route JSON"}
+              </Button>
+            </div>
+          ) : (
+            <Alert className="bg-red-500/20 border-red-500/50">
+              <AlertCircle className="h-4 w-4 text-red-400" />
+              <AlertDescription className="text-red-200">Route JSON is invalid. Fix it in the advanced editor.</AlertDescription>
+            </Alert>
+          )}
+
+          {(showJsonEditor || !currentRoute) && (
+            <textarea
+              value={routeJson}
+              onChange={(e) => setRouteJson(e.target.value)}
+              rows={10}
+              className="w-full bg-white/10 border border-purple-500/30 rounded-md p-3 text-white font-mono text-xs"
+            />
+          )}
         </CardContent>
       </Card>
 

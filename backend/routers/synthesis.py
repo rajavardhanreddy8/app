@@ -20,6 +20,27 @@ class RetrosynthesisRequest(BaseModel):
     max_routes: int = 5
 
 
+@router.get("/llm/status")
+async def llm_status(validate: bool = False):
+    """Return non-secret LLM configuration and health details."""
+    from services.claude_service import ClaudeService
+
+    service = None
+    if deps.orchestrator is not None:
+        service = getattr(deps.orchestrator, "claude_service", None)
+    if service is None:
+        service = ClaudeService()
+
+    if validate:
+        return await service.validate_configuration()
+
+    status = service.status_snapshot()
+    startup_status = getattr(deps, "llm_status", None)
+    if startup_status and not status.get("validation"):
+        status["validation"] = startup_status.get("validation")
+    return status
+
+
 @router.post("/synthesis/plan", response_model=SynthesisResponse)
 async def plan_synthesis(
     request: SynthesisRequest,
@@ -28,22 +49,37 @@ async def plan_synthesis(
     batch_size_kg: float = 0.1,
     pharma_mode: bool = False,
     use_mcts: bool = False,
+    use_industrial_gate: bool = False,  # Phase 11
 ):
     """Plan synthesis routes for a target molecule."""
     from services.orchestrator import SynthesisPlanningOrchestrator
+    from services.claude_service import is_placeholder_api_key
 
     if deps.orchestrator is None:
+        provider = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
         api_key = os.getenv('ANTHROPIC_API_KEY')
         demo_mode = os.getenv('DEMO_MODE', 'false').lower() == 'true'
-        if not api_key and not demo_mode:
-            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured.")
+        if provider == "openrouter":
+            openrouter_key = os.getenv("OPENROUTER_API_KEY")
+            if is_placeholder_api_key(openrouter_key) and not demo_mode:
+                raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured.")
+            if is_placeholder_api_key(api_key):
+                api_key = None
+        else:
+            if is_placeholder_api_key(api_key):
+                api_key = None
+                demo_mode = True
+            if not api_key and not demo_mode:
+                raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured.")
         deps.orchestrator = SynthesisPlanningOrchestrator(api_key=api_key, db=deps.db)
 
     try:
         if use_advanced:
             result = await deps.orchestrator.plan_synthesis_advanced(
                 request=request, num_routes=5, scale=scale,
-                batch_size_kg=batch_size_kg, use_mcts=use_mcts, pharma_mode=pharma_mode,
+                batch_size_kg=batch_size_kg, use_mcts=use_mcts,
+                pharma_mode=pharma_mode,
+                use_industrial_gate=use_industrial_gate,
             )
         else:
             result = await deps.orchestrator.plan_synthesis(request)

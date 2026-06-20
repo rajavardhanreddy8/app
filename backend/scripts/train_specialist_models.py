@@ -41,6 +41,10 @@ HEADER = (
     f"{'Family':<16}{'Samples':>8}{'Train MAE':>11}{'Test MAE':>10}{'Test R²':>9}"
 )
 SEP = "-" * len(HEADER)
+HEADER = (
+    f"{'Family':<16}{'Samples':>8}{'Best Model':>16}{'Train MAE':>11}{'Test MAE':>10}{'Test R2':>9}"
+)
+SEP = "-" * len(HEADER)
 
 
 def print_table(metrics: dict) -> None:
@@ -58,10 +62,11 @@ def print_table(metrics: dict) -> None:
         if m.get("skipped"):
             print(f"  {family:<14}{n:>8}{'—':>11}{'—':>10}{'(skipped)':>9}")
             continue
+        best = m.get("best_model", "ensemble")
         tm  = m.get("train_mae", 0)
         vm  = m.get("test_mae",  0)
         vr2 = m.get("test_r2",   0)
-        print(f"  {family:<14}{n:>8}{tm:>9.2f}%{vm:>9.2f}%{vr2:>9.3f}")
+        print(f"  {family:<14}{n:>8}{best:>16}{tm:>9.2f}%{vm:>9.2f}%{vr2:>9.3f}")
 
     print(SEP)
     print()
@@ -87,8 +92,12 @@ def main():
     print("\n[3/3] Saving specialist models ...")
     pkl_path = "backend/models/specialist_models.pkl"
     svp.save(pkl_path)
+    metrics_path = "backend/models/specialist_model_metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
     size_mb = Path(pkl_path).stat().st_size / 1e6
     print(f"  Saved to {pkl_path}  ({size_mb:.1f} MB)")
+    print(f"  Saved metrics to {metrics_path}")
 
     print_table(metrics)
 
@@ -107,6 +116,7 @@ def main():
     print(f"  interval    = [{result['lower_bound']}, {result['upper_bound']}]")
     print(f"  confidence  = {result['confidence_level']}")
     print(f"  model       = {result['model']}")
+    print(f"  best model  = {result.get('best_model')}")
     print(f"  family      = {result['family']}")
     print(f"  n_train     = {result['n_training_samples']}")
 

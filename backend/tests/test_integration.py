@@ -17,6 +17,7 @@ import pytest
 import requests
 import os
 import time
+from pathlib import Path
 
 # Get backend URL from environment
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
@@ -24,6 +25,51 @@ if not BASE_URL:
     BASE_URL = "https://kinetics-predict.preview.emergentagent.com"
 
 API_URL = f"{BASE_URL}/api"
+
+
+def _env_api_key() -> str:
+    api_key = os.environ.get("API_KEY", "").strip()
+    if api_key:
+        return api_key
+
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return ""
+
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "API_KEY":
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
+def _merge_auth_headers(kwargs):
+    api_key = _env_api_key()
+    headers = dict(kwargs.pop("headers", {}) or {})
+    if api_key and "X-API-Key" not in headers:
+        headers["X-API-Key"] = api_key
+    if headers:
+        kwargs["headers"] = headers
+    return kwargs
+
+
+_raw_get = requests.get
+_raw_post = requests.post
+
+
+def _authenticated_get(url, *args, **kwargs):
+    return _raw_get(url, *args, **_merge_auth_headers(kwargs))
+
+
+def _authenticated_post(url, *args, **kwargs):
+    return _raw_post(url, *args, **_merge_auth_headers(kwargs))
+
+
+requests.get = _authenticated_get
+requests.post = _authenticated_post
 
 # Test SMILES strings for chemical molecules
 TEST_MOLECULES = {
@@ -52,7 +98,7 @@ class TestAPIHealth:
         data = response.json()
         
         assert "version" in data
-        assert data["version"] == "1.0.0"
+        assert data["version"] == "2.0.0"
         assert "message" in data
         assert "Chemistry Synthesis Planning API" in data["message"]
         print(f"✓ API version: {data['version']}")
@@ -562,6 +608,7 @@ TEST_MOLECULES = {
     "ibuprofen": "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
     "ethanol": "CCO",
     "benzene": "c1ccccc1",
+    "invalid": "INVALID_SMILES_STRING_XYZ",
 }
 
 

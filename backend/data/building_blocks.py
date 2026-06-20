@@ -12,6 +12,7 @@ from rdkit import Chem
 COMMON_BUILDING_BLOCKS = [
     # ── Benzene core & aryl halides ──────────────────────────────────────
     "c1ccccc1",                                    # benzene
+    "Cc1ccccc1",                                   # toluene
     "c1ccccc1Br", "c1ccccc1Cl", "c1ccccc1I",      # halobenzenes
     "Brc1cccnc1",                                  # 3-bromopyridine
     "Brc1ccc(OC)cc1",                              # 4-bromoanisole

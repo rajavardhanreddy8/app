@@ -6,8 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
-from dependencies import verify_api_key
-import dependencies as deps
+from dependencies import deps, verify_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["optimization"], dependencies=[Depends(verify_api_key)])
@@ -77,11 +76,50 @@ class IterativeOptimizationRequest(BaseModel):
     early_stop_threshold: float = 0.5
     pharma_mode: bool = False
 
+class GreenCompareRequest(BaseModel):
+    routes: List[Dict[str, Any]]
+    scale: str = "lab"   # lab | pilot | industrial
+
+class TelescopingAnalysisRequest(BaseModel):
+    route: Dict[str, Any]
+
+class StageGateAnalysisRequest(BaseModel):
+    routes: List[Dict[str, Any]]
+    stage: str
+    quantity_kg: float
+
 class YieldOptimizationRequest(BaseModel):
     route: Dict[str, Any]
     pharma_mode: bool = False
     max_iterations: int = 5
     target_yield: float = 0.99
+
+
+def _quality_metadata(
+    source: str,
+    confidence: float,
+    *,
+    uncertainty: Optional[Dict[str, Any]] = None,
+    warnings: Optional[List[str]] = None,
+    model_version: str = "quality_contract_v1",
+) -> Dict[str, Any]:
+    """Build additive provenance metadata for estimated API outputs."""
+    warning_list = [str(item) for item in (warnings or []) if item]
+    normalized_confidence = round(max(0.0, min(1.0, float(confidence))), 3)
+    return {
+        "prediction_source": source,
+        "confidence": normalized_confidence,
+        "uncertainty": uncertainty,
+        "warnings": warning_list,
+        "review_status": "needs_human_review",
+        "human_review_required": True,
+        "evidence": {
+            "source": source,
+            "model_version": model_version,
+            "confidence": normalized_confidence,
+            "uncertainty_calibrated": False,
+        },
+    }
 
 
 # ── Endpoints ──
@@ -96,6 +134,42 @@ async def predict_conditions(request: ConditionPredictionRequest):
             'reaction_type': request.reaction_type or 'unknown'
         }
         conditions = deps.condition_predictor.predict_safe(reaction_dict)
+        decision = str(conditions.get("model_decision", conditions.get("source", "fallback"))).lower()
+        if decision in {"ensemble", "legacy_model"}:
+            source, evidence_confidence = "ml", 0.7
+        elif "prior" in decision or decision == "rules":
+            source, evidence_confidence = "rules", 0.55
+        else:
+            source, evidence_confidence = "fallback", 0.25
+
+        temperature = conditions.get("temperature_celsius")
+        uncertainty = None
+        if isinstance(temperature, (int, float)):
+            uncertainty = {
+                "temperature_celsius": {
+                    "lower": round(float(temperature) - 20.0, 2),
+                    "upper": round(float(temperature) + 20.0, 2),
+                    "calibrated": False,
+                }
+            }
+        metadata = _quality_metadata(
+            source,
+            evidence_confidence,
+            uncertainty=uncertainty,
+            warnings=conditions.get("safety_warnings", []) + (
+                ["Condition predictor used fallback values."] if source == "fallback" else []
+            ),
+            model_version="condition_predictor_v1",
+        )
+        for key in (
+            "prediction_source",
+            "uncertainty",
+            "warnings",
+            "review_status",
+            "human_review_required",
+            "evidence",
+        ):
+            conditions.setdefault(key, metadata[key])
         return {'status': 'success', 'conditions': conditions}
     except Exception as e:
         logger.error(f"Condition prediction failed: {e}")
@@ -120,7 +194,21 @@ async def compare_routes(request: RouteComparisonRequest):
             raise HTTPException(status_code=400, detail="No valid routes. " + " | ".join(errors[:3]))
 
         scored = deps.route_scorer.compare_routes(route_objects, request.optimize_for)
-        results = [{'route': s['route'].model_dump(), 'score': s['score'], 'metrics': s['metrics']} for s in scored]
+        score_metadata = _quality_metadata(
+            "heuristic",
+            0.5,
+            warnings=["Route ranking uses weighted heuristic scoring and requires chemist review."],
+            model_version="enhanced_route_scorer_v1",
+        )
+        results = [
+            {
+                'route': s['route'].model_dump(),
+                'score': s['score'],
+                'metrics': s['metrics'],
+                'score_evidence': score_metadata,
+            }
+            for s in scored
+        ]
         return {'status': 'success', 'ranked_routes': results, 'optimization_goal': request.optimize_for}
     except HTTPException:
         raise
@@ -134,7 +222,8 @@ async def copilot_optimize(request: CopilotQuery):
     """AI Copilot for synthesis optimization."""
     from services.synthesis_copilot import SynthesisCopilot
     if deps.copilot_service is None:
-        deps.copilot_service = SynthesisCopilot(claude_api_key=os.getenv('ANTHROPIC_API_KEY'))
+        claude_key = os.getenv('ANTHROPIC_API_KEY') if os.getenv("LLM_PROVIDER", "anthropic").lower() != "openrouter" else None
+        deps.copilot_service = SynthesisCopilot(claude_api_key=claude_key)
     try:
         return await deps.copilot_service.process_query(
             user_query=request.query, current_route=request.route_data, context=request.context)
@@ -151,8 +240,18 @@ async def optimize_for_scale(request: ScaleOptimizationRequest):
         optimizer = ScaleAwareOptimizer()
         if request.target_scale not in ['lab', 'pilot', 'industrial']:
             raise HTTPException(status_code=400, detail="target_scale must be 'lab', 'pilot', or 'industrial'")
-        return {'status': 'success', 'optimization': optimizer.optimize_for_scale(
-            reaction=request.reaction, target_scale=request.target_scale, batch_size_kg=request.batch_size_kg)}
+        optimization = optimizer.optimize_for_scale(
+            reaction=request.reaction,
+            target_scale=request.target_scale,
+            batch_size_kg=request.batch_size_kg,
+        )
+        optimization.update(_quality_metadata(
+            "heuristic",
+            0.4,
+            warnings=["Scale-up estimates are engineering heuristics, not validated batch records."],
+            model_version="scale_aware_optimizer_v1",
+        ))
+        return {'status': 'success', 'optimization': optimization}
     except HTTPException:
         raise
     except Exception as e:
@@ -168,7 +267,25 @@ async def calculate_industrial_cost(request: IndustrialCostRequest):
         costs = AdvancedCostModel().calculate_total_cost(
             reaction=request.reaction, scale=request.scale,
             batch_size_kg=request.batch_size_kg, include_recovery=request.include_recovery)
-        return {'status': 'success', 'scale': request.scale, 'batch_size_kg': request.batch_size_kg, 'costs': costs}
+        return {
+            'status': 'success',
+            'scale': request.scale,
+            'batch_size_kg': request.batch_size_kg,
+            'costs': costs,
+            **_quality_metadata(
+                "heuristic",
+                0.35,
+                uncertainty={
+                    "relative_cost_percent": {
+                        "lower": -30.0,
+                        "upper": 75.0,
+                        "calibrated": False,
+                    }
+                },
+                warnings=["Costs use local catalog assumptions and simplified scale factors."],
+                model_version="advanced_cost_model_v1",
+            ),
+        }
     except Exception as e:
         logger.error(f"Industrial cost calculation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -193,6 +310,14 @@ async def evaluate_process_constraints(request: ProcessConstraintsRequest):
             },
             'recommendations': constraints.recommendations,
             'equipment_requirements': constraints.equipment_requirements,
+            **_quality_metadata(
+                "rules",
+                0.5,
+                warnings=[
+                    "Safety and process scores are rule-based screening outputs, not a process hazard analysis."
+                ],
+                model_version="process_constraints_rules_v1",
+            ),
         }
     except Exception as e:
         logger.error(f"Process constraints evaluation failed: {e}")
@@ -241,7 +366,15 @@ async def calculate_confidence(request: ConfidenceScoreRequest):
                 'yield_confidence': c.yield_confidence, 'cost_confidence': c.cost_confidence,
                 'safety_confidence': c.safety_confidence, 'equipment_feasibility': c.equipment_feasibility,
                 'risk_level': c.risk_level, 'risk_factors': c.risk_factors,
-                'reliability_breakdown': c.reliability_breakdown}
+                'reliability_breakdown': c.reliability_breakdown,
+                **_quality_metadata(
+                    "heuristic",
+                    0.5,
+                    warnings=[
+                        "Reliability scores combine heuristic sub-scores and are not calibrated probabilities."
+                    ],
+                    model_version="route_optimizer_confidence_v1",
+                )}
     except Exception as e:
         logger.error(f"Confidence calculation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -343,4 +476,99 @@ async def yield_optimization(request: YieldOptimizationRequest):
             'duration_ms': r.duration_ms}
     except Exception as e:
         logger.error(f"Yield optimization failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/routes/telescoping-analysis")
+async def telescoping_analysis(request: TelescopingAnalysisRequest):
+    """Analyze whether consecutive route steps can be telescoped one-pot."""
+    if not request.route.get("steps"):
+        raise HTTPException(status_code=400, detail="route.steps is required")
+
+    try:
+        from services.telescoping_analyzer import TelescopingAnalyzer
+
+        analyzer = TelescopingAnalyzer()
+        analysis = analyzer.analyze_route_telescoping(request.route)
+        return {"status": "success", **analysis}
+    except Exception as e:
+        logger.error(f"Telescoping analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/routes/stage-gate-analysis")
+async def stage_gate_analysis(request: StageGateAnalysisRequest):
+    """Return route recommendations appropriate for a clinical development stage."""
+    if not request.routes:
+        raise HTTPException(status_code=400, detail="At least one route is required")
+
+    try:
+        from services.stage_gate_advisor import StageGateAdvisor
+
+        advisor = StageGateAdvisor()
+        return {
+            "status": "success",
+            **advisor.advise_for_stage(
+                routes=request.routes,
+                stage=request.stage,
+                target_quantity_kg=request.quantity_kg,
+            ),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Stage-gate analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Green Chemistry Comparison ───────────────────────────────────────────────
+
+@router.post("/routes/green-compare")
+async def green_compare_routes(request: GreenCompareRequest):
+    """
+    Rank multiple synthesis routes by sustainability.
+
+    Returns a sustainability ranking (separate from yield/cost) based on:
+      1. PMI  — Process Mass Intensity   (lower is greener)
+      2. AE   — Atom Economy             (higher is greener)
+      3. E-factor                        (lower is greener)
+      4. Convergence score               (higher is greener)
+
+    Also returns individual green_metrics for each route.
+    """
+    if not request.routes:
+        raise HTTPException(status_code=400, detail="At least one route is required")
+
+    try:
+        from services.green_chemistry_metrics import get_green_metrics
+        green = get_green_metrics()
+        ranked = green.rank_routes(request.routes, scale=request.scale)
+
+        # Build summary table
+        summary = []
+        for entry in ranked:
+            gm = entry["green_metrics"]
+            summary.append({
+                "sustainability_rank":  entry["sustainability_rank"],
+                "sustainability_score": entry["sustainability_score"],
+                "atom_economy_percent":            gm.get("atom_economy_percent"),
+                "e_factor":                        gm.get("e_factor"),
+                "pmi":                             gm.get("pmi"),
+                "pmi_rating":                      gm.get("pmi_rating"),
+                "route_type":                      gm.get("route_type"),
+                "convergence_score":               gm.get("convergence_score"),
+                "estimated_co2_kg_per_kg_product": gm.get("estimated_co2_kg_per_kg_product"),
+                "bottleneck_step":                 gm.get("bottleneck_step"),
+                "solvent_intensity_kg_per_kg":     gm.get("solvent_intensity_kg_per_kg"),
+            })
+
+        return {
+            "status": "success",
+            "scale": request.scale,
+            "num_routes": len(ranked),
+            "sustainability_ranking": summary,
+            "ranked_routes": ranked,
+        }
+    except Exception as e:
+        logger.error(f"Green comparison failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

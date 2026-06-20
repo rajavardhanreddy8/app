@@ -1,10 +1,19 @@
+import ast
+import json
 import os
 import sys
 import logging
 import structlog
 import time
 from typing import Dict, Any, List, Optional
-from models.chemistry import SynthesisRequest, SynthesisResponse, SynthesisRoute
+from models.chemistry import (
+    MolecularStructure,
+    ReactionCondition,
+    ReactionStep,
+    SynthesisRequest,
+    SynthesisResponse,
+    SynthesisRoute,
+)
 from services.claude_service import ClaudeService
 from services.molecular_service import MolecularService, normalize_reaction_fields  
 from services.synthesis_planner import SynthesisPlanner
@@ -18,6 +27,30 @@ from services.process_constraints_engine import ProcessConstraintsEngine
 from services.equipment_spec_engine import EquipmentSpecEngine
 from services.chemical_graph import ChemicalGraph
 from services.mcts_search import MCTSSearch
+from services.green_chemistry_metrics import get_green_metrics
+from services.impurity_tracker import ImpurityTracker
+from services.telescoping_analyzer import TelescopingAnalyzer
+
+# Phase 11: Industrial Acceptability Gate (optional import)
+try:
+    from services.industrial_acceptability_engine import IndustrialAcceptabilityEngine
+    _ACCEPTABILITY_ENGINE_AVAILABLE = True
+except ImportError:
+    _ACCEPTABILITY_ENGINE_AVAILABLE = False
+
+# Phase 12: Byproduct, Selectivity, and Reversibility Engine
+try:
+    from services.byproduct_selectivity_engine import ByproductSelectivityEngine
+    _BYPRODUCT_ENGINE_AVAILABLE = True
+except ImportError:
+    _BYPRODUCT_ENGINE_AVAILABLE = False
+
+# Phase 12: Byproduct, Selectivity, and Reversibility Engine
+try:
+    from services.byproduct_selectivity_engine import ByproductSelectivityEngine
+    _BYPRODUCT_ENGINE_AVAILABLE = True
+except ImportError:
+    _BYPRODUCT_ENGINE_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -59,6 +92,8 @@ class SynthesisPlanningOrchestrator:
         self.yield_predictor = get_yield_predictor()
         self.condition_predictor = ConditionPredictor()
         self.route_scorer = EnhancedRouteScorer()
+        self.impurity_tracker = ImpurityTracker()
+        self.telescoping_analyzer = TelescopingAnalyzer()
         
         # Phase 5: Process constraints engine
         try:
@@ -207,7 +242,6 @@ class SynthesisPlanningOrchestrator:
         if not parsed_data and claude_response.get("content"):
             # Backward compatibility path (demo mode or legacy payload)
             try:
-                import json
                 parsed_data = json.loads(claude_response["content"])
             except Exception:
                 parsed_data = None
@@ -220,34 +254,53 @@ class SynthesisPlanningOrchestrator:
                 claude_response=parsed_data,
                 optimize_for=request.optimize_for
             )
+            for route in routes:
+                route.llm_metadata = {
+                    **(route.llm_metadata or {}),
+                    **(claude_response.get("metadata") or {}),
+                }
         
+        # Step 4: Enrich every route with process-development intelligence.
+        routes, enrichment_metadata = self._enrich_synthesis_routes(
+            routes,
+            request=request,
+            scale=request.scale,
+        )
+
         # Step 5: Create response
         computation_time = time.time() - start_time
-        
+
         response = SynthesisResponse(
             target_smiles=request.target_smiles,
             routes=routes,
             computation_time_seconds=round(computation_time, 2),
-            tokens_used=claude_response["usage"]["total_tokens"]
+            tokens_used=claude_response["usage"]["total_tokens"],
+            metadata={
+                "computation_time_seconds": round(computation_time, 2),
+                "enrichment_timing": enrichment_metadata.get("timing", {}),
+                "models_used": enrichment_metadata.get("models_used", []),
+                "llm": claude_response.get("metadata") or self.claude_service.status_snapshot(),
+            },
         )
-        
+
         logger.info(
             "synthesis_planning_complete",
             num_routes=len(routes),
             computation_time=computation_time,
             tokens_used=response.tokens_used
         )
-        
+
         return response
     
     async def plan_synthesis_advanced(
-        self, 
+        self,
         request: SynthesisRequest,
         num_routes: int = 5,
         scale: str = "lab",
         batch_size_kg: float = 0.1,
         use_mcts: bool = False,  # Phase 6: MCTS toggle
-        pharma_mode: bool = False  # Phase 5: Pharma enforcement
+        pharma_mode: bool = False,  # Phase 5: Pharma enforcement
+        use_industrial_gate: bool = False,  # Phase 11: Acceptability gate
     ) -> SynthesisResponse:
         """
         Advanced synthesis planning with full optimization loop.
@@ -346,21 +399,45 @@ class SynthesisPlanningOrchestrator:
                 
                 # Sub-step 3g: Calculate industrial costs (with hybrid caching)
                 route_dict = self._calculate_industrial_costs(route_dict, scale, batch_size_kg)
-                
-                # Sub-step 3h: Calculate composite score (includes constraint/equipment penalties)
+
+                # Phase 12: Sub-step 3g.5: Byproduct, Selectivity, and Reversibility Engine
+                if _BYPRODUCT_ENGINE_AVAILABLE:
+                    try:
+                        _byproduct_engine = ByproductSelectivityEngine()
+                        route_dict = _byproduct_engine.evaluate(route_dict, pharma_mode=pharma_mode)
+                    except Exception as _bp_err:
+                        logger.warning('byproduct_engine_failed: %s', _bp_err)
+
+                # Phase 11: Sub-step 3h: Industrial Acceptability Gate
+                if use_industrial_gate and _ACCEPTABILITY_ENGINE_AVAILABLE:
+                    try:
+                        _ia_mode = "pharma" if pharma_mode else request.optimize_for or "balanced"
+                        _ia_engine = IndustrialAcceptabilityEngine()
+                        route_dict['industrial_acceptability'] = _ia_engine.evaluate(
+                            route_dict, mode=_ia_mode
+                        )
+                    except Exception as _ia_err:
+                        logger.warning("industrial_gate_failed: %s", _ia_err)
+                        route_dict['industrial_acceptability'] = None
+
+                # Sub-step 3i: Calculate composite score (includes constraint/equipment penalties)
                 route_dict['score'] = self._calculate_composite_score(
-                    route_dict, 
+                    route_dict,
                     request.optimize_for
                 )
-                
+
                 optimized_routes.append(route_dict)
                 
             except Exception as e:
                 logger.error(f"failed_to_optimize_route_{idx+1}: {str(e)}")
                 continue
         
-        # Step 4: Rank routes by score
-        optimized_routes.sort(key=lambda r: r.get('score', 0), reverse=True)
+        # Step 4: Enrich routes with the same process-development intelligence as normal mode.
+        optimized_routes, enrichment_metadata = self._enrich_route_dicts(
+            optimized_routes,
+            request=request,
+            scale=scale,
+        )
         
         # Step 5: Convert to SynthesisRoute objects
         final_routes = []
@@ -372,23 +449,401 @@ class SynthesisPlanningOrchestrator:
                 logger.error(f"failed_to_convert_route: {str(e)}")
                 continue
         
+        # Step 5a: Attach green chemistry metrics to each final route
+        green = get_green_metrics()
+        for synthesis_route in final_routes:
+            try:
+                route_dict_for_green = {
+                    "steps": [
+                        {
+                            "reactants": [r.smiles for r in step.reactants],
+                            "product": step.product.smiles,
+                            "conditions": {
+                                "time_hours": (step.conditions.time_hours or 4.0)
+                                if step.conditions else 4.0
+                            },
+                        }
+                        for step in synthesis_route.steps
+                    ]
+                }
+                gm = green.calculate(route_dict_for_green, scale=scale)
+                synthesis_route.green_metrics = gm.to_dict()
+            except Exception as _gm_err:
+                logger.warning(f"green_metrics_advanced_failed: {_gm_err}")
+
         # Step 6: Create response
         computation_time = time.time() - start_time
-        
+
+        # Phase 11: Group routes by industrial status when gate is active
+        grouped: Optional[Dict[str, Any]] = None
+        if use_industrial_gate:
+            grouped = self._group_routes_by_acceptability(final_routes)
+
         response = SynthesisResponse(
             target_smiles=request.target_smiles,
             routes=final_routes,
             computation_time_seconds=round(computation_time, 2),
-            tokens_used=0  # No LLM tokens used in advanced mode
+            tokens_used=0,
+            metadata={
+                "computation_time_seconds": round(computation_time, 2),
+                "enrichment_timing": enrichment_metadata.get("timing", {}),
+                "models_used": enrichment_metadata.get("models_used", []),
+                "industrial_gate_active": use_industrial_gate,
+                "grouped_routes": grouped,
+            },
         )
-        
+
         logger.info(
             "advanced_synthesis_planning_complete",
             num_routes=len(final_routes),
-            computation_time=computation_time
+            computation_time=computation_time,
+            industrial_gate=use_industrial_gate,
         )
-        
+
         return response
+
+    def _enrich_synthesis_routes(
+        self,
+        routes: List[SynthesisRoute],
+        request: SynthesisRequest,
+        scale: str = "lab",
+    ) -> tuple[List[SynthesisRoute], Dict[str, Any]]:
+        route_dicts = [route.model_dump() for route in routes]
+        enriched_dicts, metadata = self._enrich_route_dicts(route_dicts, request=request, scale=scale)
+        enriched_routes: List[SynthesisRoute] = []
+        for route_dict in enriched_dicts:
+            try:
+                enriched_routes.append(SynthesisRoute.model_validate(route_dict))
+            except Exception as exc:
+                logger.warning("route_enrichment_validation_failed", error=str(exc))
+        return enriched_routes, metadata
+
+    def _enrich_route_dicts(
+        self,
+        routes: List[Dict[str, Any]],
+        request: SynthesisRequest,
+        scale: str = "lab",
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        timing: Dict[str, int] = {}
+        models_used = ["condition_prior"]
+        routes = [self._normalize_route_dict(route) for route in routes]
+
+        t0 = time.perf_counter()
+        for route in routes:
+            self._enrich_conditions(route)
+        timing["condition_intelligence_ms"] = int((time.perf_counter() - t0) * 1000)
+
+        t0 = time.perf_counter()
+        if getattr(request, "include_green_metrics", True):
+            green = get_green_metrics()
+            for route in routes:
+                try:
+                    route["green_metrics"] = green.calculate(route, scale=scale).to_dict()
+                except Exception as exc:
+                    logger.warning("green_metrics_failed", error=str(exc))
+                    route["green_metrics"] = {
+                        "pmi": None,
+                        "atom_economy_percent": None,
+                        "e_factor": None,
+                        "route_type": "unknown",
+                        "convergence_score": 0,
+                        "pmi_rating": "unknown",
+                    }
+            models_used.append("green_metrics_v1")
+        timing["green_metrics_ms"] = int((time.perf_counter() - t0) * 1000)
+
+        t0 = time.perf_counter()
+        if getattr(request, "include_impurity_analysis", True):
+            for route in routes:
+                try:
+                    impurity_result = self.impurity_tracker.propagate_route(route)
+                    route["impurity_analysis"] = {
+                        "overall_impurity_risk": impurity_result["overall_impurity_risk"],
+                        "ich_m7_assessment_required": impurity_result["ich_m7_assessment_required"],
+                        "gti_flags": impurity_result["gti_flags"],
+                        "accumulated_impurities": impurity_result["accumulated_impurities"],
+                        "purge_points": impurity_result["purge_points"],
+                        "recommended_purification": impurity_result.get("recommended_additional_purification", []),
+                    }
+                except Exception as exc:
+                    logger.warning("impurity_analysis_failed", error=str(exc))
+                    route["impurity_analysis"] = {
+                        "overall_impurity_risk": "unknown",
+                        "ich_m7_assessment_required": False,
+                        "gti_flags": [],
+                        "accumulated_impurities": [],
+                        "purge_points": [],
+                    }
+            models_used.append("impurity_rules")
+        timing["impurity_ms"] = int((time.perf_counter() - t0) * 1000)
+
+        t0 = time.perf_counter()
+        if getattr(request, "include_telescoping", True):
+            for route in routes:
+                try:
+                    tele_result = self.telescoping_analyzer.analyze_route_telescoping(route)
+                    route["telescoping"] = {
+                        "telescopable_pairs": [list(pair) for pair in tele_result.get("telescopable_pairs", [])],
+                        "total_pmi_reduction": tele_result.get("total_pmi_reduction", 0),
+                        "total_time_reduction_hours": tele_result.get("total_time_reduction_hours", 0),
+                        "recommended_sequence": tele_result.get("recommended_sequence", ""),
+                    }
+                except Exception as exc:
+                    logger.warning("telescoping_analysis_failed", error=str(exc))
+                    route["telescoping"] = {
+                        "telescopable_pairs": [],
+                        "total_pmi_reduction": 0,
+                        "total_time_reduction_hours": 0,
+                        "recommended_sequence": "",
+                    }
+            models_used.append("telescoping_rules")
+        timing["telescoping_ms"] = int((time.perf_counter() - t0) * 1000)
+
+        t0 = time.perf_counter()
+        optimize_for = getattr(request, "optimize_for", "balanced")
+        stage = getattr(request, "stage", "phase_2")
+        for route in routes:
+            try:
+                score_result = self.route_scorer.score_route_unified(
+                    route,
+                    optimize_for=optimize_for,
+                    stage=stage,
+                )
+                route["score"] = score_result["score"]
+                route["score_breakdown"] = score_result["dimension_scores"]
+                route["improvement_targets"] = score_result["improvement_targets"]
+            except Exception as exc:
+                logger.warning("unified_scoring_failed", error=str(exc))
+        routes.sort(key=lambda item: item.get("score", 0), reverse=True)
+        timing["scoring_ms"] = int((time.perf_counter() - t0) * 1000)
+        models_used.append("unified_scorer_v1")
+
+        self._attach_quality_metadata(routes, request=request, models_used=models_used)
+        models_used.append("quality_evidence_v1")
+
+        logger.info("enrichment_timing", **timing)
+        return routes, {"timing": timing, "models_used": models_used}
+
+    def _attach_quality_metadata(
+        self,
+        routes: List[Dict[str, Any]],
+        request: SynthesisRequest,
+        models_used: List[str],
+    ) -> None:
+        """Attach source, confidence, uncertainty, and review metadata."""
+        for route in routes:
+            llm_meta = route.get("llm_metadata") or {}
+            llm_mode = str(llm_meta.get("mode") or "").lower()
+            route_type = str(route.get("route_type") or "").lower()
+            if "demo" in llm_mode:
+                generation_source = "demo"
+            elif llm_meta:
+                generation_source = "llm"
+            elif route_type == "retrosynthesis":
+                generation_source = "rules"
+            else:
+                generation_source = "hybrid"
+
+            route_warnings: List[str] = []
+            if generation_source == "demo":
+                route_warnings.append(
+                    "Demo or fallback route: use only for workflow validation until reviewed against literature."
+                )
+            if route.get("improvement_targets"):
+                route_warnings.extend([str(item) for item in route.get("improvement_targets", [])])
+
+            step_confidences: List[str] = []
+            yield_lowers: List[float] = []
+            yield_uppers: List[float] = []
+
+            for idx, step in enumerate(route.get("steps", []), start=1):
+                yield_prediction = step.get("yield_prediction") or {}
+                conditions = step.get("predicted_conditions") or step.get("conditions") or {}
+                condition_confidence = conditions.get("confidence")
+                yield_confidence = yield_prediction.get("confidence_level")
+
+                confidence = self._combine_confidence([yield_confidence, condition_confidence])
+                step_confidences.append(confidence)
+
+                lower = yield_prediction.get("lower_bound")
+                upper = yield_prediction.get("upper_bound")
+                interval = yield_prediction.get("confidence_interval")
+                step_uncertainty = None
+                if lower is not None and upper is not None:
+                    step_uncertainty = {
+                        "yield_percent": {
+                            "lower": lower,
+                            "upper": upper,
+                            "interval": interval if interval is not None else round(float(upper) - float(lower), 1),
+                        }
+                    }
+                    yield_lowers.append(max(0.0, float(lower)) / 100.0)
+                    yield_uppers.append(min(100.0, float(upper)) / 100.0)
+
+                step_warnings = []
+                for key in ("sanity_flags", "safety_warnings", "feasibility_notes"):
+                    step_warnings.extend(str(item) for item in step.get(key, []) if item)
+                if "fallback" in str(yield_prediction.get("model_decision") or yield_prediction.get("model") or "").lower():
+                    step_warnings.append("Yield estimate used fallback logic; verify experimentally.")
+                if condition_confidence == "low" or conditions.get("fallback"):
+                    step_warnings.append("Condition estimate used low-confidence or fallback logic.")
+
+                step["prediction_source"] = {
+                    "route_generation": generation_source,
+                    "yield": yield_prediction.get("model") or ("llm_or_demo_payload" if llm_meta else "heuristic_or_route_input"),
+                    "conditions": conditions.get("source") or conditions.get("model_decision") or "condition_prior",
+                    "cost": "cost_model_or_route_estimate",
+                    "safety": "rules_and_process_constraints",
+                }
+                step["confidence"] = confidence
+                step["uncertainty"] = step_uncertainty
+                step["warnings"] = self._unique_strings(step_warnings)
+                step["review_status"] = "needs_human_review"
+                step["human_review_required"] = True
+                step["evidence"] = {
+                    "source_type": generation_source,
+                    "source_name": llm_meta.get("model") or route.get("route_type") or "SynthAI internal engines",
+                    "model_version": self._yield_model_version(),
+                    "data_version": self._data_version(),
+                    "notes": [
+                        f"Step {idx} requires chemist review before experimental use.",
+                    ],
+                }
+                route_warnings.extend(step["warnings"])
+
+            route_confidence = self._combine_confidence(step_confidences)
+            route_uncertainty = None
+            if yield_lowers and yield_uppers:
+                overall_lower = 100.0
+                overall_upper = 100.0
+                for value in yield_lowers:
+                    overall_lower *= value
+                for value in yield_uppers:
+                    overall_upper *= value
+                route_uncertainty = {
+                    "overall_yield_percent": {
+                        "lower": round(overall_lower, 1),
+                        "upper": round(overall_upper, 1),
+                    }
+                }
+
+            route["prediction_source"] = {
+                "route_generation": generation_source,
+                "scoring": "unified_scorer_v1",
+                "green_metrics": "rules" if route.get("green_metrics") else None,
+                "impurity": "rules" if route.get("impurity_analysis") else None,
+                "models_used": list(models_used),
+            }
+            route["confidence"] = route_confidence
+            route["uncertainty"] = route_uncertainty
+            route["warnings"] = self._unique_strings(route_warnings)[:12]
+            route["review_status"] = "needs_human_review"
+            route["human_review_required"] = True
+            route["evidence"] = {
+                "source_type": generation_source,
+                "source_name": llm_meta.get("model") or route.get("route_type") or "SynthAI internal engines",
+                "model_version": self._yield_model_version(),
+                "condition_model_version": "condition_predictor_v1",
+                "data_version": self._data_version(),
+                "human_review_required": True,
+            }
+
+    def _combine_confidence(self, values: List[Optional[str]]) -> str:
+        rank = {"low": 0, "medium": 1, "high": 2}
+        clean = [str(value).lower() for value in values if value]
+        if not clean:
+            return "low"
+        return min(clean, key=lambda value: rank.get(value, 0))
+
+    def _unique_strings(self, values: List[str]) -> List[str]:
+        seen = set()
+        unique = []
+        for value in values:
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            unique.append(value)
+        return unique
+
+    def _yield_model_version(self) -> str:
+        return str(getattr(self.yield_predictor, "model_version", type(self.yield_predictor).__name__))
+
+    def _data_version(self) -> str:
+        return os.getenv("SYNTHAI_DATA_VERSION", "local-artifacts")
+
+    def _smiles_text(self, value: Any) -> str:
+        if isinstance(value, dict):
+            return str(value.get("smiles") or value.get("canonical_smiles") or "")
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("{") and text.endswith("}"):
+                try:
+                    parsed = ast.literal_eval(text)
+                    if isinstance(parsed, dict):
+                        return str(parsed.get("smiles") or parsed.get("canonical_smiles") or text)
+                except Exception:
+                    return text
+            return text
+        return str(value or "")
+
+    def _normalize_route_dict(self, route: Dict[str, Any]) -> Dict[str, Any]:
+        route = dict(route)
+        route["steps"] = [self._normalize_step_dict(step) for step in route.get("steps", [])]
+        route["num_steps"] = route.get("num_steps", len(route["steps"]))
+        route["overall_yield"] = route.get("overall_yield", route.get("overall_yield_percent", route.get("scale_adjusted_overall_yield", 0)))
+        route["overall_yield_percent"] = route.get("overall_yield_percent", route["overall_yield"])
+        route["total_cost_usd"] = route.get("total_cost_usd", route.get("total_cost", 0))
+        route["total_time_hours"] = route.get("total_time_hours", sum(
+            (step.get("conditions") or {}).get("time_hours", 0) or 0
+            for step in route["steps"]
+        ))
+        return route
+
+    def _normalize_step_dict(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        step = dict(step)
+        conditions = step.get("conditions") or step.get("predicted_conditions") or {}
+        step["conditions"] = conditions if isinstance(conditions, dict) else {}
+        if "estimated_yield" not in step:
+            step["estimated_yield"] = step.get("estimated_yield_percent", step.get("predicted_yield", step.get("scale_adjusted_yield", 75.0)))
+        if "estimated_yield_percent" not in step:
+            step["estimated_yield_percent"] = step["estimated_yield"]
+        if "estimated_cost_usd" not in step:
+            step["estimated_cost_usd"] = step.get("cost_breakdown", {}).get("total_cost", 50.0)
+        return step
+
+    def _enrich_conditions(self, route: Dict[str, Any]) -> None:
+        for step in route.get("steps", []):
+            try:
+                step.setdefault("conditions", {})
+                conditions = self.condition_predictor.predict_conditions({
+                    "reaction_type": step.get("reaction_type", ""),
+                    "reactants": step.get("reactants", []),
+                    "products": [step.get("product", "")],
+                    "fast_prior_only": True,
+                })
+                existing_temp = step["conditions"].get("temperature_celsius")
+                if existing_temp is None or abs(float(existing_temp) - 80.72176361083984) < 0.1:
+                    step["conditions"]["temperature_celsius"] = conditions.get("temperature_celsius")
+                if not step["conditions"].get("catalyst"):
+                    step["conditions"]["catalyst"] = conditions.get("catalyst")
+                if not step["conditions"].get("solvent"):
+                    step["conditions"]["solvent"] = conditions.get("solvent")
+                if not step["conditions"].get("time_hours"):
+                    step["conditions"]["time_hours"] = conditions.get("time_hours")
+                step["predicted_conditions"] = dict(step["conditions"])
+                step["catalyst_intelligence"] = {
+                    "hierarchy_level": conditions.get("hierarchy_level"),
+                    "catalyst_type": conditions.get("catalyst_type"),
+                    "catalyst_cost_per_kg": conditions.get("catalyst_cost_per_kg"),
+                    "separation_method": conditions.get("separation_method"),
+                    "reuse_cycles": conditions.get("reuse_cycles"),
+                    "pd_removal_required": conditions.get("pd_removal_required", False),
+                    "regulatory_note": conditions.get("regulatory_note"),
+                    "notes": conditions.get("notes"),
+                }
+                step["safety_warnings"] = conditions.get("safety_warnings", [])
+            except Exception as exc:
+                logger.warning("condition_enrichment_failed", error=str(exc), reaction_type=step.get("reaction_type"))
     
     def _convert_retro_route_to_dict(self, retro_route: Dict) -> Dict:
         """Convert retrosynthesis route to internal processing format."""
@@ -776,16 +1231,27 @@ class SynthesisPlanningOrchestrator:
         equipment_penalty = route.get('equipment_penalty', 0.0)
         constraint_score = max(0, 100 - constraint_penalty)
         equipment_score = max(0, 100 - equipment_penalty)
+
+        # Phase 12: Byproduct, selectivity, reversibility penalties
+        bp_analysis = route.get('byproduct_analysis', {})
+        bp_penalty = bp_analysis.get('byproduct_penalty', 0.0)
+        sel_penalty = bp_analysis.get('selectivity_penalty', 0.0)
+        rev_penalty = bp_analysis.get('reversibility_penalty', 0.0)
+        imp_penalty = bp_analysis.get('impurity_risk_penalty', 0.0)
         
-        # Weights based on optimization goal (Phase 5: added 10% for constraints)
+        # Combine Phase 12 penalties into one score component
+        total_phase12_penalty = bp_penalty + sel_penalty + rev_penalty + imp_penalty
+        phase12_score = max(0, 100 - total_phase12_penalty)
+        
+        # Weights based on optimization goal (Phase 5: added 10% for constraints, Phase 12: added 10% for phase12 metrics)
         if optimize_for == 'yield':
-            weights = {'yield': 0.50, 'cost': 0.10, 'time': 0.05, 'steps': 0.10, 'constraints': 0.15, 'equipment': 0.10}
+            weights = {'yield': 0.45, 'cost': 0.10, 'time': 0.05, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10, 'phase12': 0.10}
         elif optimize_for == 'cost':
-            weights = {'yield': 0.20, 'cost': 0.40, 'time': 0.05, 'steps': 0.10, 'constraints': 0.15, 'equipment': 0.10}
+            weights = {'yield': 0.20, 'cost': 0.35, 'time': 0.05, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10, 'phase12': 0.10}
         elif optimize_for == 'time':
-            weights = {'yield': 0.20, 'cost': 0.10, 'time': 0.40, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10}
+            weights = {'yield': 0.20, 'cost': 0.10, 'time': 0.35, 'steps': 0.10, 'constraints': 0.05, 'equipment': 0.10, 'phase12': 0.10}
         else:  # balanced
-            weights = {'yield': 0.30, 'cost': 0.25, 'time': 0.15, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10}
+            weights = {'yield': 0.25, 'cost': 0.25, 'time': 0.10, 'steps': 0.10, 'constraints': 0.10, 'equipment': 0.10, 'phase12': 0.10}
         
         composite_score = (
             weights['yield'] * yield_score +
@@ -793,16 +1259,14 @@ class SynthesisPlanningOrchestrator:
             weights['time'] * time_score +
             weights['steps'] * step_score +
             weights['constraints'] * constraint_score +
-            weights['equipment'] * equipment_score
+            weights['equipment'] * equipment_score +
+            weights['phase12'] * phase12_score
         )
         
         return round(composite_score, 2)
     
     def _convert_dict_to_synthesis_route(self, route_dict: Dict, target_smiles: str) -> SynthesisRoute:
         """Convert internal route dict to SynthesisRoute Pydantic model."""
-        from models.chemistry import SynthesisRoute, ReactionStep, MolecularStructure, ReactionCondition
-        from datetime import datetime
-        
         # Create target molecule
         target_mol = MolecularStructure(smiles=target_smiles)
         
@@ -818,20 +1282,25 @@ class SynthesisPlanningOrchestrator:
             try:
                 # Create reactants
                 reactants = [
-                    MolecularStructure(smiles=r) 
+                    MolecularStructure(smiles=self._smiles_text(r))
                     for r in step_data.get('reactants', [])
+                    if self._smiles_text(r)
                 ]
                 
                 # Create product
-                product = MolecularStructure(smiles=step_data.get('product', ''))
+                product = MolecularStructure(smiles=self._smiles_text(step_data.get('product', '')))
                 
                 # Create conditions
                 cond_data = step_data.get('predicted_conditions', {})
                 conditions = ReactionCondition(
                     temperature_celsius=cond_data.get('temperature_celsius', 25.0),
+                    pressure_atm=cond_data.get('pressure_atm', step_data.get('pressure_atm', 1.0)),
                     solvent=cond_data.get('solvent', 'THF'),
                     catalyst=cond_data.get('catalyst'),
-                    time_hours=step_data.get('predicted_time_hours', 4.0)
+                    time_hours=step_data.get('predicted_time_hours', cond_data.get('time_hours', 4.0)),
+                    solvent_volume_ml=cond_data.get('solvent_volume_ml'),
+                    concentration_m=cond_data.get('concentration_m') or step_data.get('concentration_m'),
+                    catalyst_loading_mol_percent=cond_data.get('catalyst_loading_mol_percent'),
                 )
                 
                 # Create step
@@ -841,7 +1310,26 @@ class SynthesisPlanningOrchestrator:
                     reaction_type=step_data.get('reaction_type', 'Unknown'),
                     conditions=conditions,
                     estimated_yield_percent=step_data.get('scale_adjusted_yield', 75.0),
-                    estimated_cost_usd=step_data.get('cost_breakdown', {}).get('total_cost', 50.0)
+                    estimated_yield=step_data.get('estimated_yield', step_data.get('scale_adjusted_yield', 75.0)),
+                    estimated_cost_usd=step_data.get('cost_breakdown', {}).get('total_cost', step_data.get('estimated_cost_usd', 50.0)),
+                    reactant_quantities=step_data.get('reactant_quantities'),
+                    catalyst_loading=step_data.get('catalyst_loading'),
+                    solvent_amount=step_data.get('solvent_amount'),
+                    concentration_m=step_data.get('concentration_m') or conditions.concentration_m,
+                    batch_scale=step_data.get('batch_scale'),
+                    cost_drivers=step_data.get('cost_drivers'),
+                    feasibility_notes=step_data.get('feasibility_notes'),
+                    sanity_flags=step_data.get('sanity_flags'),
+                    catalyst_intelligence=step_data.get('catalyst_intelligence'),
+                    safety_warnings=step_data.get('safety_warnings', []),
+                    notes=step_data.get('notes'),
+                    evidence=step_data.get('evidence'),
+                    prediction_source=step_data.get('prediction_source'),
+                    confidence=step_data.get('confidence'),
+                    uncertainty=step_data.get('uncertainty'),
+                    warnings=step_data.get('warnings'),
+                    review_status=step_data.get('review_status', 'needs_human_review'),
+                    human_review_required=step_data.get('human_review_required', True),
                 )
                 
                 steps.append(step)
@@ -856,10 +1344,70 @@ class SynthesisPlanningOrchestrator:
             starting_materials=starting_materials,
             steps=steps,
             overall_yield_percent=route_dict.get('scale_adjusted_overall_yield', 75.0),
+            overall_yield=route_dict.get('overall_yield', route_dict.get('scale_adjusted_overall_yield', 75.0)),
             total_cost_usd=route_dict.get('total_cost_usd', 100.0),
             total_time_hours=route_dict.get('total_time_hours', 10.0),
             score=route_dict.get('score', 50.0),
-            notes=f"Scale: {route_dict.get('scale', 'lab')}, Batch: {route_dict.get('batch_size_kg', 0.1)}kg"
+            notes=f"Scale: {route_dict.get('scale', 'lab')}, Batch: {route_dict.get('batch_size_kg', 0.1)}kg",
+            green_metrics=route_dict.get('green_metrics'),
+            impurity_analysis=route_dict.get('impurity_analysis'),
+            telescoping=route_dict.get('telescoping'),
+            score_breakdown=route_dict.get('score_breakdown'),
+            improvement_targets=route_dict.get('improvement_targets'),
+            evidence=route_dict.get('evidence'),
+            prediction_source=route_dict.get('prediction_source'),
+            confidence=route_dict.get('confidence'),
+            uncertainty=route_dict.get('uncertainty'),
+            warnings=route_dict.get('warnings'),
+            review_status=route_dict.get('review_status', 'needs_human_review'),
+            human_review_required=route_dict.get('human_review_required', True),
+            industrial_acceptability=route_dict.get('industrial_acceptability'),
+            byproduct_analysis=route_dict.get('byproduct_analysis'),
         )
         
         return synthesis_route
+
+    def _group_routes_by_acceptability(self, routes: List) -> Dict[str, Any]:
+        """
+        Phase 11: Group SynthesisRoute objects by their industrial_acceptability status.
+
+        Returns grouped dict with summary counts.
+        """
+        accepted:     List = []
+        ard_required: List = []
+        rejected:     List = []
+        exploratory:  List = []
+
+        for route in routes:
+            # industrial_acceptability may be on the raw dict or pydantic model extra fields
+            ia = None
+            if hasattr(route, '__dict__'):
+                ia = getattr(route, 'industrial_acceptability', None)
+            if ia is None and hasattr(route, 'model_dump'):
+                ia = route.model_dump().get('industrial_acceptability')
+            if ia is None and isinstance(route, dict):
+                ia = route.get('industrial_acceptability')
+
+            status = (ia or {}).get('industrial_status', 'ard_required') if ia else 'ard_required'
+
+            if status == 'accepted':
+                accepted.append(route)
+            elif status == 'ard_required':
+                ard_required.append(route)
+            elif status == 'exploratory_only':
+                exploratory.append(route)
+            else:  # rejected
+                rejected.append(route)
+
+        return {
+            "accepted_routes":     accepted,
+            "ard_required_routes": ard_required,
+            "rejected_routes":     rejected,
+            "exploratory_routes":  exploratory,
+            "summary": {
+                "accepted_count":     len(accepted),
+                "ard_required_count": len(ard_required),
+                "rejected_count":     len(rejected),
+                "exploratory_count":  len(exploratory),
+            },
+        }

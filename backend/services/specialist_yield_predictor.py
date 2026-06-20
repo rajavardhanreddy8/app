@@ -26,7 +26,8 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 
-from services.yield_predictor import YieldPredictor
+from services.multi_model import MultiModelRegressor
+from services.yield_predictor import YieldPredictor, QuantileYieldPredictor
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class SpecialistYieldPredictor:
 
     def __init__(self):
         # family → trained xgb.XGBRegressor
-        self.specialists: Dict[str, xgb.XGBRegressor] = {}
+        self.specialists: Dict[str, Any] = {}
         # family → training sample count
         self.specialist_sample_counts: Dict[str, int] = {}
         # global YieldPredictor used as fallback
@@ -134,6 +135,28 @@ class SpecialistYieldPredictor:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state
         )
+
+        bundle = MultiModelRegressor(random_state=random_state)
+        model_metrics = bundle.fit(X_train, y_train, X_test, y_test)
+
+        if not bundle.models:
+            logger.warning(f"[{family}] No candidate models trained successfully")
+            return {}
+
+        ensemble_metrics = model_metrics.get("ensemble", {})
+        self.specialists[family] = bundle
+        self.specialist_sample_counts[family] = len(X_list)
+
+        return {
+            "n_samples": len(X_list),
+            "train_mae": round(float(ensemble_metrics.get("train_mae", 0.0)), 3),
+            "test_mae": round(float(ensemble_metrics.get("test_mae", 0.0)), 3),
+            "train_r2": round(float(ensemble_metrics.get("train_r2", 0.0)), 3),
+            "test_r2": round(float(ensemble_metrics.get("test_r2", 0.0)), 3),
+            "best_model": bundle.best_model_name,
+            "model_metrics": model_metrics,
+            "skipped_models": bundle.skipped_models,
+        }
 
         model = xgb.XGBRegressor(
             n_estimators=400,
@@ -220,14 +243,27 @@ class SpecialistYieldPredictor:
 
     def _predict_with_specialist(
         self,
-        model: xgb.XGBRegressor,
+        model: Any,
         reaction: Dict,
     ) -> Optional[float]:
         feat = self._featurizer.featurize_reaction(reaction)
         if feat is None:
             return None
-        raw = model.predict(feat.reshape(1, -1))[0]
+        if hasattr(model, "predict") and hasattr(model, "prediction_summary"):
+            raw = model.predict(feat.reshape(1, -1), clip_range=(0, 100))
+        else:
+            raw = model.predict(feat.reshape(1, -1))[0]
+        if raw is None:
+            return None
         return float(max(0.0, min(100.0, raw)))
+
+    def _specialist_model_details(self, model: Any, reaction: Dict) -> Dict[str, Any]:
+        if not hasattr(model, "prediction_summary"):
+            return {}
+        feat = self._featurizer.featurize_reaction(reaction)
+        if feat is None:
+            return {}
+        return model.prediction_summary(feat.reshape(1, -1), clip_range=(0, 100))
 
     def predict(self, reaction: Dict) -> Optional[float]:
         """Point estimate — uses specialist if available, else global fallback."""
@@ -244,13 +280,41 @@ class SpecialistYieldPredictor:
     def predict_with_uncertainty(self, reaction: Dict) -> Dict[str, Any]:
         """
         Predict yield and attach calibrated uncertainty intervals.
-
-        Uncertainty width is determined by how many samples the specialist
-        was trained on — well-trained specialists get tighter intervals.
+        
+        Uses QuantileYieldPredictor for statistical bounds if available,
+        falling back to sample-count-based heuristics.
         """
         family = classify_reaction_family(reaction.get("reaction_type", ""))
+        n_samples = self.specialist_sample_counts.get(family, 0)
         point_estimate = self.predict(reaction)
+        model_details = {}
+        if family in self.specialists:
+            model_details = self._specialist_model_details(self.specialists[family], reaction)
+            if model_details.get("ensemble_prediction") is not None:
+                point_estimate = float(model_details["ensemble_prediction"])
+        elif self.global_model and hasattr(self.global_model, "_multi_model_prediction_details"):
+            model_details = self.global_model._multi_model_prediction_details(reaction)
 
+        # Try to use Quantile models for the actual uncertainty width
+        quantile_predictor = QuantileYieldPredictor()
+        if quantile_predictor.load_models():
+            res = quantile_predictor.predict_with_uncertainty(reaction)
+            # If we used a specialist for the point estimate, override the yield_percent
+            # but keep the quantile bounds
+            if point_estimate is not None:
+                res["yield_percent"] = round(point_estimate, 1)
+            res["family"] = family
+            res["n_training_samples"] = n_samples
+            res.setdefault("individual_predictions", {})
+            res.setdefault("ensemble_prediction", round(point_estimate, 3) if point_estimate is not None else None)
+            res.setdefault("best_model", None)
+            res.setdefault("model_metrics", {})
+            res.update(model_details)
+            res["model_decision"] = "family_ensemble" if family in self.specialists else "global_ensemble"
+            res["bounds_model"] = "quantile_xgboost"
+            return res
+
+        # Fallback to sample-count-based heuristic
         if point_estimate is None:
             return {
                 "yield_percent": 75.0,
@@ -258,15 +322,21 @@ class SpecialistYieldPredictor:
                 "upper_bound": 95.0,
                 "confidence_interval": 45.0,
                 "confidence_level": "low",
-                "model": "fallback_default",
+                "model": "point_estimate_fallback",
                 "family": family,
                 "n_training_samples": 0,
+                "individual_predictions": {},
+                "ensemble_prediction": None,
+                "best_model": None,
+                "model_metrics": {},
+                "model_decision": "fallback",
             }
 
-        n_samples = self.specialist_sample_counts.get(family, 0)
-
-        # Calibrated uncertainty based on sample count
-        if n_samples > 1000:
+        # Calibrated uncertainty based on model disagreement, then sample count.
+        disagreement = float(model_details.get("prediction_std") or 0.0)
+        if disagreement > 0:
+            uncertainty = max(8.0, disagreement * 1.96)
+        elif n_samples > 1000:
             uncertainty = 8.0    # tight — well-trained specialist
         elif n_samples > 200:
             uncertainty = 12.0   # moderate
@@ -275,8 +345,8 @@ class SpecialistYieldPredictor:
         else:
             uncertainty = 20.0   # global fallback
 
-        lower = max(0.0, point_estimate - uncertainty)
-        upper = min(100.0, point_estimate + uncertainty)
+        lower = float(np.clip(point_estimate - uncertainty, 0, 100))
+        upper = float(np.clip(point_estimate + uncertainty, 0, 100))
 
         if uncertainty <= 10:
             confidence_level = "high"
@@ -289,16 +359,19 @@ class SpecialistYieldPredictor:
             f"specialist_{family}" if family in self.specialists else "global_fallback"
         )
 
-        return {
+        result = {
             "yield_percent":      round(point_estimate, 1),
             "lower_bound":        round(lower, 1),
             "upper_bound":        round(upper, 1),
             "confidence_interval": round(upper - lower, 1),
             "confidence_level":   confidence_level,
-            "model":              model_label,
+            "model":              f"{model_label}_ensemble" if model_details else f"{model_label}_fallback",
             "family":             family,
             "n_training_samples": n_samples,
+            "model_decision": "family_ensemble" if family in self.specialists else "global_ensemble",
         }
+        result.update(model_details)
+        return result
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

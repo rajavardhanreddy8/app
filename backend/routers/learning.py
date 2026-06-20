@@ -5,8 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
-from dependencies import verify_api_key
-import dependencies as deps
+from dependencies import deps, verify_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["learning"], dependencies=[Depends(verify_api_key)])
@@ -80,6 +79,22 @@ async def retrain_models(request: RetrainRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/routes/impurity-analysis")
+async def analyze_route_impurities(payload: Dict[str, Any]):
+    """Analyze byproduct propagation and ICH M7 GTI flags for a route."""
+    try:
+        from services.impurity_tracker import ImpurityTracker
+
+        route = payload.get("route", payload)
+        return {
+            "status": "success",
+            "impurity_analysis": ImpurityTracker().propagate_route(route),
+        }
+    except Exception as e:
+        logger.error(f"Impurity analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/learning/status")
 async def learning_status():
     """Closed-loop learning status and memory diagnostics."""
@@ -93,10 +108,11 @@ async def learning_status():
         for model in deps.learning_engine.model_names:
             latest = await deps.db.model_versions.find_one({"model": model}, sort=[("created_at", -1)])
             latest_versions[model] = latest["version"] if latest else "v0"
+        threshold = deps.learning_engine.config.min_samples_required
         return {
             "status": "success",
             "feedback": {"total": total, "verified": verified,
-                         "retrain_threshold": deps.learning_engine.retrain_threshold},
+                         "retrain_threshold": threshold},
             "models": latest_versions,
             "mutation_priorities": priorities,
         }

@@ -95,12 +95,12 @@ class TestFeatureComputation:
             "reaction_type": "esterification",
         }
         features = predictor.compute_reaction_features(rxn)
-        assert features.shape == (100,)
+        assert features.shape == (predictor.CONDITION_FEATURE_SIZE,)
 
     def test_empty_reactants_returns_zeros(self, predictor):
         rxn = {"reactants": [], "products": [], "reaction_type": "unknown"}
         features = predictor.compute_reaction_features(rxn)
-        assert features.shape == (100,)
+        assert features.shape == (predictor.CONDITION_FEATURE_SIZE,)
         assert np.all(features == 0)
 
     def test_invalid_smiles_degrades_gracefully(self, predictor):
@@ -110,7 +110,7 @@ class TestFeatureComputation:
             "reaction_type": "unknown",
         }
         features = predictor.compute_reaction_features(rxn)
-        assert features.shape == (100,)  # Should pad with zeros
+        assert features.shape == (predictor.CONDITION_FEATURE_SIZE,)  # Should pad with zeros
 
 
 # ── Prediction fallback tests ─────────────────────────────────────
@@ -124,7 +124,7 @@ class TestPredictionFallback:
         result = pred.predict_conditions({
             "reactants": ["CCO"],
             "products": ["CCOC(C)=O"],
-            "reaction_type": "esterification",
+            "reaction_type": "unknown_new_reaction",
         })
         assert result["confidence"] == "low"
         assert result["temperature_celsius"] == 25.0
@@ -146,6 +146,43 @@ class _AlwaysFailModel:
 
     def predict_proba(self, _features):
         raise RuntimeError("forced model failure")
+
+
+class _FakeRegressorBundle:
+    best_model_name = "fake_regressor"
+    skipped_models = {}
+
+    def prediction_summary(self, _features, clip_range=None):
+        return {
+            "individual_predictions": {"random_forest": 42.0, "xgboost": 44.0},
+            "ensemble_prediction": 43.0,
+            "prediction_std": 1.0,
+            "best_model": self.best_model_name,
+            "model_metrics": {"ensemble": {"test_mae": 2.0}},
+        }
+
+    def predict(self, _features, clip_range=None):
+        return 43.0
+
+
+class _FakeClassifierBundle:
+    def __init__(self, label):
+        self.label = label
+        self.best_model_name = "fake_classifier"
+        self.skipped_models = {}
+
+    def prediction_summary(self, _features):
+        return {
+            "individual_predictions": {
+                "random_forest": {"prediction": self.label, "confidence": 0.8},
+                "xgboost": {"prediction": self.label, "confidence": 0.7},
+            },
+            "ensemble_prediction": self.label,
+            "consensus_fraction": 1.0,
+            "alternatives": [{"option": self.label, "votes": 2, "confidence": 0.75}],
+            "best_model": self.best_model_name,
+            "model_metrics": {"ensemble": {"accuracy": 1.0, "macro_f1": 1.0}},
+        }
 
 
 def test_safe_label_encoder_unseen_maps_to_unknown_index_zero():
@@ -172,16 +209,51 @@ def test_predict_safe_with_unseen_catalyst_returns_fallback_instead_of_raising()
     reaction = {
         "reactants": ["CCO"],
         "products": ["CC=O"],
-        "reaction_type": "oxidation",
+        "reaction_type": "unknown_new_reaction",
         "catalyst": "NeverSeenCatalyst",
     }
 
     result = predictor.predict_safe(reaction)
 
-    assert result == {
-        "temperature_celsius": 25.0,
-        "catalyst": "unknown",
-        "solvent": "THF",
-        "confidence": 0.0,
-        "fallback": True,
-    }
+    assert result["temperature_celsius"] == 25.0
+    assert result["solvent"] == "THF"
+    assert result["confidence"] in {"low", 0.0}
+    assert result["fallback"] is True
+    assert result["source"] == "fallback"
+
+
+def test_chemistry_prior_includes_model_decision_and_overrides_ml():
+    predictor = ConditionPredictor(model_dir="/tmp/condition_predictor_test_models")
+    predictor.models_loaded = False
+
+    result = predictor.predict_conditions({
+        "reactants": ["O=[N+]([O-])c1ccccc1"],
+        "products": ["Nc1ccccc1"],
+        "reaction_type": "nitro_reduction",
+    })
+
+    assert result["catalyst"] in {"Fe", "Fe powder"}
+    assert result["model_decision"] == "chemistry_prior"
+    assert "model_results" in result
+    assert "ensemble_consensus" in result
+
+
+def test_condition_predictor_returns_multi_model_results_for_unknown_reaction():
+    predictor = ConditionPredictor(model_dir="/tmp/condition_predictor_test_models")
+    predictor.models_loaded = True
+    predictor.temp_multi_model = _FakeRegressorBundle()
+    predictor.catalyst_multi_model = _FakeClassifierBundle("Pd/C")
+    predictor.solvent_multi_model = _FakeClassifierBundle("EtOAc")
+
+    result = predictor.predict_conditions({
+        "reactants": ["CCO"],
+        "products": ["CC=O"],
+        "reaction_type": "custom_reaction_without_prior",
+    })
+
+    assert result["temperature_celsius"] == 43.0
+    assert result["catalyst"] == "Pd/C"
+    assert result["solvent"] == "EtOAc"
+    assert result["model_results"]["temperature"]["ensemble_prediction"] == 43.0
+    assert result["ensemble_consensus"]["catalyst"] == "Pd/C"
+    assert result["model_decision"] == "ensemble"
