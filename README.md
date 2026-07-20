@@ -1,6 +1,6 @@
 # SynthAI — AI Synthesis Route Planner
 
-SynthAI is a full-stack AI platform for computer-aided synthesis planning of drug-like molecules. Given a target SMILES string, it generates multi-step retrosynthetic routes using a hybrid of Claude AI (LLM planning), a 60-template SMARTS retrosynthesis engine, and a 5-model XGBoost specialist yield predictor. The system covers the complete synthetic chemistry workflow: retrosynthesis, condition prediction, yield estimation with uncertainty intervals, scale-up cost modelling, and equipment feasibility scoring.
+SynthAI is a full-stack AI platform for computer-aided synthesis planning of drug-like molecules. Given a target SMILES string, it generates multi-step retrosynthetic routes using a hybrid of  AI (GNN& Knowlegde graph planning), a 60-template SMARTS retrosynthesis engine, and a 5-model XGBoost specialist yield predictor. The system covers the complete synthetic chemistry workflow: retrosynthesis, condition prediction, yield estimation with uncertainty intervals, scale-up cost modelling, and equipment feasibility scoring.
 
 **Stack:** FastAPI · React 18 · Zustand · XGBoost · RDKit · Claude API · MongoDB · D3.js · Docker
 
