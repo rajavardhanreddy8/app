@@ -95,7 +95,8 @@ class TestFindPrecursors:
     def test_each_precursor_set_contains_valid_smiles(self, engine):
         result = engine._find_precursors("CC(=O)Oc1ccccc1C(=O)O")
         for precursor_set in result:
-            for smi in precursor_set:
+            state = precursor_set[0] if isinstance(precursor_set, tuple) else precursor_set
+            for smi in str(state).split("."):
                 mol = Chem.MolFromSmiles(smi)
                 assert mol is not None, f"Invalid SMILES in precursor set: {smi}"
 
@@ -106,7 +107,10 @@ class TestFindPrecursors:
     def test_simple_ester_finds_alcohol_and_acid(self, engine):
         """Ethyl acetate should disconnect to ethanol + acetic acid."""
         result = engine._find_precursors("CCOC(C)=O")
-        all_precursors = [smi for group in result for smi in group]
+        all_precursors = []
+        for group in result:
+            state = group[0] if isinstance(group, tuple) else group
+            all_precursors.extend(str(state).split("."))
         # At least one precursor should be alcohol-like or acid-like
         has_oxygen = any("O" in smi for smi in all_precursors)
         assert has_oxygen, f"Expected O-containing precursor, got: {all_precursors}"

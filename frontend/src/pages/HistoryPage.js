@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,11 +29,7 @@ const HistoryPage = () => {
   const [expandedItem, setExpandedItem] = useState(null);
   const [limit, setLimit] = useState(20);
 
-  useEffect(() => {
-    fetchHistory();
-  }, [limit]);
-
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -45,7 +41,11 @@ const HistoryPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [limit]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
 
   const filteredHistory = history.filter((item) =>
     searchTerm

@@ -61,6 +61,8 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  devServerConfig.historyApiFallback = true;
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
@@ -96,5 +98,20 @@ if (isDevServer) {
     }
   }
 }
+
+const wrappedDevServer = webpackConfig.devServer;
+webpackConfig.devServer = (devServerConfig) => {
+  const config =
+    typeof wrappedDevServer === "function"
+      ? wrappedDevServer(devServerConfig)
+      : { ...devServerConfig, ...(wrappedDevServer || {}) };
+
+  config.historyApiFallback = {
+    disableDotRule: true,
+    index: "/index.html",
+  };
+
+  return config;
+};
 
 module.exports = webpackConfig;

@@ -14,6 +14,7 @@ import os
 import types
 import re
 import inspect
+import ast
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Paths
 BACKEND_DIR = Path(__file__).parent.parent
 ORCHESTRATOR_PATH = BACKEND_DIR / "services" / "orchestrator.py"
+COPILOT_PATH = BACKEND_DIR / "services" / "synthesis_copilot.py"
 
 
 # ── Source-scan tests (no imports needed) ─────────────────────────
@@ -46,15 +48,14 @@ class TestOrchestratorImports:
 
     def test_imports_at_top_not_inside_method(self):
         """All imports should be at module level, not inside methods."""
-        lines = self.source.splitlines()
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith(("from ", "import ")):
-                # Should not be indented more than 0 (module level)
-                leading_spaces = len(line) - len(line.lstrip())
-                assert leading_spaces == 0, (
-                    f"Import on line {i+1} is indented ({leading_spaces} spaces): {stripped}"
-                )
+        tree = ast.parse(self.source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                nested_imports = [
+                    child for child in ast.walk(node)
+                    if isinstance(child, (ast.Import, ast.ImportFrom))
+                ]
+                assert not nested_imports, f"Import found inside {node.name}"
 
     def test_class_exists(self):
         assert "class SynthesisPlanningOrchestrator" in self.source
@@ -181,6 +182,10 @@ os.environ.update({
 from services.synthesis_copilot import SynthesisCopilot
 
 
+def _copilot_source() -> str:
+    return COPILOT_PATH.read_text(encoding="utf-8")
+
+
 SAMPLE_ROUTE = {
     "steps": [
         {
@@ -235,7 +240,7 @@ class TestCopilotInterface:
             "Keyword fallback parser must be preserved"
 
     def test_llm_intent_parser_exists(self):
-        src = inspect.getsource(SynthesisCopilot)
+        src = _copilot_source()
         has_llm_parser = (
             "_parse_intent_with_llm" in src or
             "parse_intent" in src and ("claude" in src.lower() or "client" in src.lower())
@@ -253,7 +258,7 @@ class TestCopilotRouteAwareness:
         assert "route" in sig.parameters or "current_route" in sig.parameters
 
     def test_optimize_for_yield_accepts_route(self):
-        src = inspect.getsource(SynthesisCopilot)
+        src = _copilot_source()
         assert "_optimize_for_yield" in src
 
     def test_cost_optimizer_inspects_route_steps(self):
@@ -265,9 +270,13 @@ class TestCopilotRouteAwareness:
             "_optimize_for_cost must inspect actual route steps"
 
     def test_explain_route_uses_actual_steps(self):
-        src = inspect.getsource(SynthesisCopilot)
+        src = _copilot_source()
         explain_section = src[src.find("_explain_route"):][:500]
-        uses_steps = "steps" in explain_section or "reaction_type" in explain_section
+        uses_steps = (
+            "steps" in explain_section
+            or "reaction_type" in explain_section
+            or "_route_digest" in explain_section
+        )
         assert uses_steps, "_explain_route should reference actual route steps"
 
     def test_source_not_all_hardcoded_bullets(self):

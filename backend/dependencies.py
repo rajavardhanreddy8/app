@@ -6,8 +6,10 @@ Import from here instead of creating new instances in each router.
 
 import os
 import logging
+from pathlib import Path
 from fastapi import Header, HTTPException, Depends
 from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
 from services.molecular_service import MolecularService
 from services.condition_predictor import ConditionPredictor
@@ -18,6 +20,8 @@ from services.process_constraints_engine import ProcessConstraintsEngine
 
 logger = logging.getLogger(__name__)
 
+load_dotenv(Path(__file__).parent / ".env")
+
 # ── API key auth ──
 API_KEY = os.getenv("API_KEY", None)
 
@@ -27,9 +31,10 @@ def verify_api_key(x_api_key: str = Header(None)) -> str:
     If API_KEY env var is not set → dev mode, skip auth entirely.
     If set → require header to match exactly, else 401.
     """
-    if API_KEY is None:
+    configured_key = os.getenv("API_KEY")
+    if not configured_key:
         return "dev_mode"
-    if x_api_key != API_KEY:
+    if x_api_key != configured_key:
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key. Pass X-API-Key header.",
@@ -43,10 +48,13 @@ class MockCollection:
     def find(self, *args, **kwargs):
         class Cursor:
             def sort(self, *args): return self
+            def skip(self, *args): return self
             def limit(self, *args): return self
             async def to_list(self, *args): return []
         return Cursor()
     async def count_documents(self, *args): return 0
+    async def find_one(self, *args, **kwargs): return None
+    async def update_one(self, *args, **kwargs): return True
 
 class MockDatabase:
     def __getattr__(self, name): return MockCollection()
@@ -55,6 +63,8 @@ class Dependencies:
     def __init__(self):
         self.mongo_client = None
         self.db = MockDatabase() # Default to mock
+        self.db_mode = "mock"
+        self.db_error = "MongoDB has not been initialized yet"
         self.molecular_service = MolecularService()
         self.condition_predictor = ConditionPredictor()
         self.route_scorer = EnhancedRouteScorer()
@@ -70,6 +80,7 @@ class Dependencies:
         self.yield_engine = None
         self.learning_engine = None
         self.yield_predictor = None
+        self.llm_status = None
         
         # Load models
         self.condition_predictor.load_models()
@@ -79,15 +90,19 @@ deps = Dependencies()
 
 async def init_db():
     try:
-        mongo_url = os.getenv('MONGODB_URL', 'mongodb://localhost:27017')
+        mongo_url = os.getenv('MONGODB_URL') or os.getenv('MONGO_URL', 'mongodb://localhost:27017')
         deps.mongo_client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=2000)
         # Verify connection
         await deps.mongo_client.server_info()
         deps.db = deps.mongo_client.rxn_planner
+        deps.db_mode = "mongodb"
+        deps.db_error = None
         logging.info("✓ Connected to MongoDB")
     except Exception as e:
         logging.warning(f"✗ MongoDB unavailable ({e}), using in-memory mock")
         deps.db = MockDatabase()
+        deps.db_mode = "mock"
+        deps.db_error = str(e)
 
 # ── Lazy-init services (set during startup event) ──
 # These are exposed at the module level for backward compatibility with router imports.

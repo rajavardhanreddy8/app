@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import os
+import json
 
 # Add parent directory to sys.path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -23,7 +24,6 @@ async def main():
         sys.exit(1)
         
     with open(json_path, "r") as f:
-        import json
         data = json.load(f)
         
     logger.info(f"Loaded {len(data)} training reactions.")
@@ -34,6 +34,29 @@ async def main():
         logger.info("Training complete!")
         logger.info(f"Final Metrics: {metrics}")
         predictor.save_model()
+        metrics_path = "backend/models/yield_model_metrics.json"
+        with open(metrics_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+        print("\nMulti-model yield comparison:")
+        print(f"{'Model':<18}{'Train MAE':>12}{'Test MAE':>12}{'Test R2':>10}")
+        print("-" * 52)
+        for name, model_metrics in metrics.get("model_metrics", {}).items():
+            if name == "ensemble":
+                label = "ensemble"
+            else:
+                label = name
+            if not isinstance(model_metrics, dict) or "test_mae" not in model_metrics:
+                continue
+            print(
+                f"{label:<18}"
+                f"{model_metrics.get('train_mae', 0):>11.2f}%"
+                f"{model_metrics.get('test_mae', 0):>11.2f}%"
+                f"{model_metrics.get('test_r2', 0):>10.3f}"
+            )
+        if metrics.get("skipped_models"):
+            print(f"\nSkipped models: {metrics['skipped_models']}")
+        print(f"\nBest model: {metrics.get('best_model')}")
+        print(f"Saved metrics to {metrics_path}")
         logger.info("Model saved successfully.")
     else:
         logger.error("Training failed.")

@@ -23,6 +23,17 @@ import {
   ChevronUp,
   FlaskConical,
 } from "lucide-react";
+import useSynthesisStore from "../store/synthesisStore";
+import {
+  formatMoney,
+  getIndustryFlags,
+  getRouteCost,
+  getRouteInputs,
+  getRouteProduct,
+  getRouteYield,
+  getStepSummary,
+  routesFromPlanner,
+} from "../utils/routeChemistry";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -30,8 +41,22 @@ const API = `${BACKEND_URL}/api`;
 const sampleRoutes = [
   {
     steps: [
-      { reaction_type: "esterification", conditions: { catalyst: "H2SO4", solvent: "DCM", temperature_celsius: 120, pressure_atm: 1 }},
-      { reaction_type: "suzuki_coupling", conditions: { catalyst: "Pd(PPh3)4", solvent: "DMF", temperature_celsius: 100, pressure_atm: 1 }},
+      {
+        reaction_type: "esterification",
+        reactants: [{ smiles: "CC(=O)O" }, { smiles: "c1ccc(O)cc1" }],
+        product: { smiles: "CC(=O)Oc1ccccc1" },
+        estimated_yield_percent: 88,
+        estimated_cost_usd: 85,
+        conditions: { catalyst: "H2SO4", solvent: "DCM", temperature_celsius: 120, pressure_atm: 1 }
+      },
+      {
+        reaction_type: "suzuki_coupling",
+        reactants: [{ smiles: "Brc1ccccc1" }, { smiles: "c1ccc(B(O)O)cc1" }],
+        product: { smiles: "c1ccc(-c2ccccc2)cc1" },
+        estimated_yield_percent: 82,
+        estimated_cost_usd: 265,
+        conditions: { catalyst: "Pd(PPh3)4", solvent: "DMF", temperature_celsius: 100, pressure_atm: 1 }
+      },
     ],
     overall_yield_percent: 60,
     total_cost_usd: 350,
@@ -42,8 +67,22 @@ const sampleRoutes = [
 const greenRoutes = [
   {
     steps: [
-      { reaction_type: "coupling", conditions: { catalyst: "Pd(PPh3)4", solvent: "benzene", temperature_celsius: 80 }},
-      { reaction_type: "reduction", conditions: { catalyst: "AlCl3", solvent: "chloroform", temperature_celsius: 60 }},
+      {
+        reaction_type: "coupling",
+        reactants: [{ smiles: "Brc1ccccc1" }, { smiles: "c1ccc(B(O)O)cc1" }],
+        product: { smiles: "c1ccc(-c2ccccc2)cc1" },
+        estimated_yield_percent: 78,
+        estimated_cost_usd: 120,
+        conditions: { catalyst: "Pd(PPh3)4", solvent: "benzene", temperature_celsius: 80 }
+      },
+      {
+        reaction_type: "reduction",
+        reactants: [{ smiles: "O=Cc1ccccc1" }],
+        product: { smiles: "OCc1ccccc1" },
+        estimated_yield_percent: 90,
+        estimated_cost_usd: 80,
+        conditions: { catalyst: "AlCl3", solvent: "chloroform", temperature_celsius: 60 }
+      },
     ],
     overall_yield_percent: 70,
     total_cost_usd: 200,
@@ -54,7 +93,14 @@ const greenRoutes = [
 const pharmaRoute = [
   {
     steps: [
-      { reaction_type: "asymmetric_hydrogenation", conditions: { catalyst: "Pd(PPh3)4", solvent: "THF", temperature_celsius: 50 }},
+      {
+        reaction_type: "asymmetric_hydrogenation",
+        reactants: [{ smiles: "C=C(C(=O)O)c1ccccc1" }, { smiles: "[H][H]" }],
+        product: { smiles: "CC(C(=O)O)c1ccccc1" },
+        estimated_yield_percent: 99.5,
+        estimated_cost_usd: 800,
+        conditions: { catalyst: "Pd(PPh3)4", solvent: "THF", temperature_celsius: 50 }
+      },
     ],
     overall_yield_percent: 99.5,
     total_cost_usd: 800,
@@ -71,6 +117,7 @@ const objectiveConfig = {
 };
 
 const ConvergenceLoopPage = () => {
+  const { plannedRoutes, targetSmiles } = useSynthesisStore();
   const [routeJson, setRouteJson] = useState(JSON.stringify(sampleRoutes, null, 2));
   const [objective, setObjective] = useState("balanced");
   const [iterations, setIterations] = useState(3);
@@ -81,12 +128,38 @@ const ConvergenceLoopPage = () => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [expandedRoute, setExpandedRoute] = useState(0);
+  const [showJsonEditor, setShowJsonEditor] = useState(false);
+
+  React.useEffect(() => {
+    const plannerRoutes = routesFromPlanner(plannedRoutes);
+    if (plannerRoutes.length > 0) {
+      setRouteJson(JSON.stringify(plannerRoutes, null, 2));
+    }
+  }, [plannedRoutes]);
 
   const presets = [
     { name: "Standard 2-step", routes: sampleRoutes },
     { name: "Green chemistry", routes: greenRoutes },
     { name: "Pharma (99.5%)", routes: pharmaRoute },
   ];
+
+  const currentRoutes = (() => {
+    try {
+      const parsed = JSON.parse(routeJson);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return null;
+    }
+  })();
+  const primaryRoute = currentRoutes?.[0];
+  const routeFlags = primaryRoute ? getIndustryFlags(primaryRoute) : [];
+  const routeInputs = primaryRoute ? getRouteInputs(primaryRoute) : [];
+
+  const loadRoutes = (routes) => {
+    setRouteJson(JSON.stringify(routes, null, 2));
+    setResult(null);
+    setError(null);
+  };
 
   const runOptimization = async () => {
     setLoading(true);
@@ -206,12 +279,19 @@ const ConvergenceLoopPage = () => {
       <Card className="bg-white/5 backdrop-blur-md border-purple-500/20 mb-6">
         <CardContent className="p-6 space-y-4">
           <div className="flex items-center justify-between mb-1">
-            <label className="text-white font-medium">Routes (JSON array)</label>
+              <div>
+                <label className="text-white font-medium">Routes to Converge</label>
+                <p className="text-purple-300/60 text-xs mt-1">
+                  {plannedRoutes.length > 0
+                    ? `Loaded from Synthesis Planner${targetSmiles ? ` for ${targetSmiles}` : ""}.`
+                    : "Using sample routes until a planner result is available."}
+                </p>
+              </div>
             <div className="flex gap-2">
               {presets.map((p) => (
                 <Button
                   key={p.name}
-                  onClick={() => setRouteJson(JSON.stringify(p.routes, null, 2))}
+                  onClick={() => loadRoutes(p.routes)}
                   variant="outline"
                   size="sm"
                   className="bg-purple-500/10 border-purple-500/30 text-purple-200 text-xs"
@@ -221,12 +301,112 @@ const ConvergenceLoopPage = () => {
               ))}
             </div>
           </div>
-          <textarea
-            value={routeJson}
-            onChange={(e) => setRouteJson(e.target.value)}
-            rows={8}
-            className="w-full bg-white/10 border border-purple-500/30 rounded-md p-3 text-white font-mono text-xs"
-          />
+          {primaryRoute ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3 md:col-span-2">
+                  <p className="text-purple-300/60 text-xs">Primary product</p>
+                  <p className="text-white font-mono text-sm truncate" title={getRouteProduct(primaryRoute)}>
+                    {getRouteProduct(primaryRoute)}
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Routes</p>
+                  <p className="text-white font-bold text-xl">{currentRoutes.length}</p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Yield</p>
+                  <p className="text-green-400 font-bold text-xl">{getRouteYield(primaryRoute)?.toFixed(1) ?? "?"}%</p>
+                </div>
+                <div className="bg-white/5 border border-purple-500/20 rounded-lg p-3">
+                  <p className="text-purple-300/60 text-xs">Cost</p>
+                  <p className="text-yellow-400 font-bold text-xl">${formatMoney(getRouteCost(primaryRoute))}</p>
+                </div>
+              </div>
+
+              {routeFlags.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {routeFlags.map((flag, idx) => (
+                    <div
+                      key={idx}
+                      className={`rounded-lg p-3 border ${
+                        flag.level === "critical"
+                          ? "bg-red-500/10 border-red-500/30"
+                          : "bg-yellow-500/10 border-yellow-500/30"
+                      }`}
+                    >
+                      <p className={flag.level === "critical" ? "text-red-200 font-semibold text-sm" : "text-yellow-200 font-semibold text-sm"}>
+                        {flag.label}
+                      </p>
+                      <p className="text-purple-100/70 text-xs mt-1">{flag.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-slate-900/30 border border-purple-500/20 rounded-lg overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs text-purple-300/70 border-b border-purple-500/20">
+                  <span className="col-span-1">Step</span>
+                  <span className="col-span-2">Role</span>
+                  <span className="col-span-4">Reactant / catalyst</span>
+                  <span className="col-span-2">Equiv</span>
+                  <span className="col-span-3">Estimated amount</span>
+                </div>
+                {routeInputs.map((row, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs border-b border-purple-500/10 last:border-b-0">
+                    <span className="col-span-1 text-white">{row.step}</span>
+                    <span className="col-span-2 text-purple-200">{row.role}</span>
+                    <span className="col-span-4 text-white font-mono truncate" title={row.name}>{row.name}</span>
+                    <span className="col-span-2 text-blue-200">{row.equivalents ?? "-"}</span>
+                    <span className="col-span-3 text-green-200">{row.amount}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                {(primaryRoute.steps || []).map((step, idx) => (
+                  <div key={idx} className="bg-white/5 rounded-lg p-3 border border-purple-500/20">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-white font-semibold text-sm">Step {idx + 1}: {step.reaction_type}</p>
+                      <Badge className="bg-green-600/20 text-green-300">
+                        {step.estimated_yield_percent ?? step.estimated_yield ?? "?"}% yield
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {getStepSummary(step).map((item) => (
+                        <Badge key={item} variant="outline" className="border-purple-500/30 text-purple-200 text-xs">
+                          {item}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                type="button"
+                onClick={() => setShowJsonEditor(!showJsonEditor)}
+                variant="outline"
+                className="bg-white/5 border-purple-500/30 text-purple-200"
+              >
+                {showJsonEditor ? "Hide JSON editor" : "Advanced: edit route JSON"}
+              </Button>
+            </div>
+          ) : (
+            <Alert className="bg-red-500/20 border-red-500/50">
+              <AlertCircle className="h-4 w-4 text-red-400" />
+              <AlertDescription className="text-red-200">Route JSON is invalid. Fix it in the advanced editor.</AlertDescription>
+            </Alert>
+          )}
+
+          {(showJsonEditor || !primaryRoute) && (
+            <textarea
+              value={routeJson}
+              onChange={(e) => setRouteJson(e.target.value)}
+              rows={8}
+              className="w-full bg-white/10 border border-purple-500/30 rounded-md p-3 text-white font-mono text-xs"
+            />
+          )}
 
           {/* Parameters */}
           <div className="grid grid-cols-4 gap-4">

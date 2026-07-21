@@ -4,6 +4,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import useSynthesisStore from "@/store/synthesisStore";
+import {
+  formatMoney,
+  getRouteCost,
+  getRouteProduct,
+  getRouteYield,
+} from "@/utils/routeChemistry";
 import {
   MessageSquare,
   Send,
@@ -39,6 +46,10 @@ const CopilotPage = () => {
   const [loading, setLoading] = useState(false);
   const [routeContext, setRouteContext] = useState("");
   const messagesEndRef = useRef(null);
+  const { getSelectedRoute, plannedRoutes } = useSynthesisStore();
+  const selectedRoute = getSelectedRoute();
+  const selectedYield = selectedRoute ? getRouteYield(selectedRoute) : null;
+  const selectedCost = selectedRoute ? getRouteCost(selectedRoute) : null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -64,7 +75,11 @@ const CopilotPage = () => {
     try {
       const payload = {
         query: messageText,
-        context: routeContext ? { route_info: routeContext } : null,
+        route_data: selectedRoute || null,
+        context: {
+          route_info: routeContext || null,
+          planner_route_count: plannedRoutes?.length || 0,
+        },
       };
 
       const response = await axios.post(`${API}/copilot/optimize`, payload);
@@ -78,7 +93,7 @@ const CopilotPage = () => {
         assistantContent += `**Intent:** ${data.intent}\n\n`;
       }
       if (data.suggestions) {
-        assistantContent += `${data.suggestions}\n\n`;
+        assistantContent += `${Array.isArray(data.suggestions) ? data.suggestions.join("\n") : data.suggestions}\n\n`;
       }
       if (data.estimated_savings) {
         assistantContent += `**Estimated Savings:** ${data.estimated_savings}\n\n`;
@@ -101,6 +116,11 @@ const CopilotPage = () => {
         Object.entries(data.suggested_conditions).forEach(([key, val]) => {
           assistantContent += `- ${key}: ${val}\n`;
         });
+      }
+      if (data.provider && data.model) {
+        assistantContent += `\n**Source:** ${data.provider} / ${data.model}\n`;
+      } else if (data.mode === "local_rule_based") {
+        assistantContent += `\n**Source:** local route-aware fallback\n`;
       }
       if (!assistantContent) {
         assistantContent = JSON.stringify(data, null, 2);
@@ -197,11 +217,22 @@ const CopilotPage = () => {
 
       {/* Optional context */}
       <Card className="bg-white/5 backdrop-blur-md border-purple-500/20 mb-4">
-        <CardContent className="p-3">
+        <CardContent className="p-3 space-y-3">
+          {selectedRoute && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-purple-100">
+              <Badge className="bg-emerald-500/15 text-emerald-200 border-emerald-400/30">
+                Planner route attached
+              </Badge>
+              <span>Product: {getRouteProduct(selectedRoute)}</span>
+              {selectedYield !== null && <span>Yield: {selectedYield.toFixed(1)}%</span>}
+              {selectedCost !== null && <span>Cost: ${formatMoney(selectedCost)}</span>}
+              <span>Steps: {selectedRoute.steps?.length || selectedRoute.num_steps || 0}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <Lightbulb className="w-4 h-4 text-yellow-400 flex-shrink-0" />
             <Input
-              placeholder="Optional: paste route/reaction context here for more specific advice..."
+              placeholder="Optional: paste extra route/reaction context here..."
               value={routeContext}
               onChange={(e) => setRouteContext(e.target.value)}
               className="bg-transparent border-none text-white text-xs placeholder:text-purple-300/40 focus-visible:ring-0"

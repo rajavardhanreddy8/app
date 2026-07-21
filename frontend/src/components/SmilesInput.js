@@ -60,6 +60,9 @@ const SmilesInput = ({
   const handleRendererSuccess = useCallback(() => {
     if (value.trim()) setIsValid(true);
   }, [value]);
+  const handleRendererUnavailable = useCallback(() => {
+    setIsValid(looksLikeSmiles(value));
+  }, [value]);
 
   const handleCopy = () => {
     if (!value) return;
@@ -139,6 +142,7 @@ const SmilesInput = ({
             size={previewSize}
             onError={handleRendererError}
             onSuccess={handleRendererSuccess}
+            onUnavailable={handleRendererUnavailable}
           />
         )}
       </div>
@@ -187,13 +191,16 @@ const SmilesInput = ({
   );
 };
 
-const SmilePreviewWrapper = ({ smiles, size, onError, onSuccess }) => {
+const SmilePreviewWrapper = ({ smiles, size, onError, onSuccess, onUnavailable }) => {
   return (
     <div style={{ flexShrink: 0 }}>
       <MoleculeRenderer
         smiles={smiles}
         size={size}
         className="preview-renderer"
+        onError={onError}
+        onSuccess={onSuccess}
+        onUnavailable={onUnavailable}
       />
     </div>
   );

@@ -80,6 +80,8 @@ Services: frontend on `:3000`, backend on `:8000`, MongoDB on `:27017`.
 
 ## Environment Variables
 
+OpenRouter is the recommended cheap cloud LLM provider for this app. Set `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY`; the backend defaults to planner models `google/gemini-2.5-flash-lite,deepseek/deepseek-v4-flash,openai/gpt-5-nano` and copilot models `google/gemini-2.0-flash-lite-001,mistralai/mistral-small-3.2-24b-instruct`. `OPENROUTER_REQUIRE_PARAMETERS=true` is the default so planner requests only route to providers that support structured JSON output. Legacy `OPENROUTER_MODEL` is tolerated, but stale `tencent/hy3-preview:free` is ignored.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | No* | — | Enables Claude AI synthesis planning. Without this the app falls back to `DEMO_MODE`. |
@@ -157,7 +159,11 @@ Run the benchmark yourself:
 PYTHONPATH=backend python backend/scripts/run_benchmark.py
 ```
 
-Results are saved to `backend/test_reports/benchmark_results.json` and compared against `benchmark_baseline.json` automatically.
+Every run writes `backend/test_reports/benchmark_report.json` and
+`backend/test_reports/benchmark_report.md`. All 30 curated cases are recorded,
+including explicit failure reasons and per-case exceptions. Baselines are never
+silently replaced; pass `--update-baseline` to update
+`benchmark_baseline_v2.json` intentionally.
 
 ---
 

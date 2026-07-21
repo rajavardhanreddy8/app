@@ -25,12 +25,14 @@ def get_yield_predictor():
     if _yield_predictor is not None:
         return _yield_predictor
 
+    model_dir = Path(__file__).resolve().parent
     specialist_path = os.getenv(
-        "SPECIALIST_MODEL_PATH", "backend/models/specialist_models.pkl"
+        "SPECIALIST_MODEL_PATH", str(model_dir / "specialist_models.pkl")
     )
     global_path = os.getenv(
-        "YIELD_MODEL_PATH", "backend/models/yield_model.pkl"
+        "YIELD_MODEL_PATH", str(model_dir / "yield_model.pkl")
     )
+    multi_global_path = str(Path(global_path).parent / "yield_model_multi.pkl")
 
     # Try specialist ensemble first
     if Path(specialist_path).exists():
@@ -49,7 +51,7 @@ def get_yield_predictor():
     # Fall back to single global model
     from services.yield_predictor import YieldPredictor
     yp = YieldPredictor(model_path=global_path)
-    if Path(global_path).exists():
+    if Path(global_path).exists() or Path(multi_global_path).exists():
         yp.load_model()
     _yield_predictor = yp
     return _yield_predictor

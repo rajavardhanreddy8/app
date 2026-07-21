@@ -1,0 +1,137 @@
+{
+  "temperature": {
+    "xgboost": {
+      "train_mae": 13.189509017420816,
+      "test_mae": 16.634253064203477,
+      "train_r2": 0.9070130194123804,
+      "test_r2": 0.8565004916741696,
+      "trained_samples": 3842
+    },
+    "random_forest": {
+      "train_mae": 7.547291691498971,
+      "test_mae": 16.759152271936497,
+      "train_r2": 0.9659610268301934,
+      "test_r2": 0.8492901628121932,
+      "trained_samples": 3842
+    },
+    "extra_trees": {
+      "train_mae": 3.625186016368601,
+      "test_mae": 17.254458424776438,
+      "train_r2": 0.9898267526229841,
+      "test_r2": 0.8394960209444102,
+      "trained_samples": 3842
+    },
+    "svm": {
+      "train_mae": 17.293530751951707,
+      "test_mae": 20.308997389913827,
+      "train_r2": 0.7958917316651004,
+      "test_r2": 0.7580575964661753,
+      "trained_samples": 1500
+    },
+    "ann_mlp": {
+      "train_mae": 15.488442207845917,
+      "test_mae": 17.302995190524914,
+      "train_r2": 0.8596840214281114,
+      "test_r2": 0.8392870596810131,
+      "trained_samples": 2000
+    },
+    "ensemble": {
+      "train_mae": 10.853384373569108,
+      "test_mae": 16.770021494982498,
+      "train_r2": 0.9328422695284789,
+      "test_r2": 0.8520305587414861,
+      "trained_samples": 3842
+    }
+  },
+  "catalyst": {
+    "xgboost": {
+      "train_accuracy": 1.0,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "random_forest": {
+      "train_accuracy": 1.0,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "extra_trees": {
+      "train_accuracy": 1.0,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "svm": {
+      "train_accuracy": 0.9997397188964081,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 1500
+    },
+    "ann_mlp": {
+      "train_accuracy": 0.9986985944820406,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 2000
+    },
+    "ensemble": {
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 960
+    }
+  },
+  "solvent": {
+    "xgboost": {
+      "train_accuracy": 0.9997397188964081,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "random_forest": {
+      "train_accuracy": 1.0,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "extra_trees": {
+      "train_accuracy": 1.0,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 3842
+    },
+    "svm": {
+      "train_accuracy": 0.9997397188964081,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 1500
+    },
+    "ann_mlp": {
+      "train_accuracy": 0.9960957834461218,
+      "accuracy": 0.9947916666666666,
+      "macro_f1": 0.9971830482988191,
+      "trained_samples": 2000
+    },
+    "ensemble": {
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "trained_samples": 960
+    }
+  },
+  "n_samples": 4803,
+  "n_features": 768,
+  "best_models": {
+    "temperature": "xgboost",
+    "catalyst": "xgboost",
+    "solvent": "xgboost"
+  },
+  "target_policy": "chemistry_prior_targets_for_known_reaction_types",
+  "target_sources": {
+    "chemistry_prior": 4802,
+    "raw_label": 1
+  },
+  "skipped_models": {
+    "temperature": {},
+    "catalyst": {},
+    "solvent": {}
+  }
+}

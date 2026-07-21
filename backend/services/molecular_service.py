@@ -21,7 +21,32 @@ def normalize_reaction_fields(reaction: dict) -> dict:
     if not isinstance(reaction, dict):
         return reaction
 
-    normalized = dict(reaction)
+    aliases = {
+        "temperature_c": "temperature_celsius",
+        "temp_celsius": "temperature_celsius",
+        "temp_c": "temperature_celsius",
+        "temp": "temperature_celsius",
+        "temperature": "temperature_celsius",
+        "time_h": "time_hours",
+        "reaction_time": "time_hours",
+        "time": "time_hours",
+        "duration_hours": "time_hours",
+        "yield": "yield_percent",
+        "yield_pct": "yield_percent",
+        "product_yield": "yield_percent",
+        "rxn_type": "reaction_type",
+        "type": "reaction_type",
+    }
+
+    normalized = {}
+    original_keys = {str(key).strip().lower() for key in reaction.keys()}
+    used_alias = False
+    for key, value in reaction.items():
+        clean_key = str(key).strip()
+        canonical = aliases.get(clean_key.lower(), clean_key)
+        if canonical != clean_key:
+            used_alias = True
+        normalized[canonical] = value
 
     # Recurse into nested structures first.
     for key, value in list(normalized.items()):
@@ -33,11 +58,14 @@ def normalize_reaction_fields(reaction: dict) -> dict:
                 for item in value
             ]
 
-    # Top-level aliases.
-    if "temperature_celsius" in normalized and "temperature_c" not in normalized:
+    # Compatibility alias used by older process engines.
+    if (
+        "temperature_celsius" in normalized
+        and "temperature_c" not in normalized
+        and "temperature_celsius" in original_keys
+        and not used_alias
+    ):
         normalized["temperature_c"] = normalized["temperature_celsius"]
-    if "time_hours" in normalized and "time_h" not in normalized:
-        normalized["time_h"] = normalized["time_hours"]
 
     # Nested conditions aliases promoted to top level.
     conditions = normalized.get("conditions")

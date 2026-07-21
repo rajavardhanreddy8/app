@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 
 from dependencies import deps
-from routers import synthesis, molecule, optimization, equipment, learning
+from routers import synthesis, molecule, optimization, equipment, learning, industrial, reaction_quality, system
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -24,7 +24,7 @@ load_dotenv(ROOT_DIR / '.env')
 # ── App ──
 app = FastAPI(
     title="Chemistry Synthesis Planning API",
-    description="AI-powered synthesis route planning using Claude Sonnet 4.5",
+    description="AI-powered synthesis route planning using cloud LLM routing and chemistry engines",
     version="2.0.0",
 )
 
@@ -56,7 +56,20 @@ async def get_status_checks(limit: int = 100, skip: int = 0):
 
 @app.get("/api/")
 async def root():
-    return {"message": "Chemistry Synthesis Planning API", "version": "2.0.0"}
+    return {
+        "message": "Chemistry Synthesis Planning API",
+        "version": "2.0.0",
+        "endpoints": {
+            "health": "/api/health",
+            "system_readiness": "/api/system/readiness",
+            "model_status": "/api/models/status",
+            "synthesis_plan": "/api/synthesis/plan",
+            "validate_molecule": "/api/molecule/validate",
+            "analyze_molecule": "/api/molecule/analyze",
+            "retrosynthesis_plan": "/api/retrosynthesis/plan",
+            "feedback_ingest": "/api/feedback/ingest",
+        },
+    }
 
 @app.get("/api/health")
 async def health():
@@ -65,10 +78,10 @@ async def health():
 @app.get("/api/auth/verify")
 async def auth_verify(x_api_key: str = None):
     """Public endpoint — verify API key status without triggering 401."""
-    from dependencies import API_KEY, verify_api_key
-    if API_KEY is None:
+    configured_key = os.getenv("API_KEY")
+    if not configured_key:
         return {"status": "dev_mode", "message": "No API_KEY configured — all requests accepted"}
-    if x_api_key == API_KEY:
+    if x_api_key == configured_key:
         return {"status": "valid", "mode": "authenticated"}
     return {"status": "invalid", "message": "Key provided but does not match"}
 
@@ -78,12 +91,25 @@ app.include_router(molecule.router)
 app.include_router(optimization.router)
 app.include_router(equipment.router)
 app.include_router(learning.router)
+app.include_router(industrial.router)
+app.include_router(reaction_quality.router)
+app.include_router(system.router)
+
+# POST /api/learning/retrain is registered by learning.router.
 
 # ── Startup ──
 @app.on_event("startup")
 async def startup_event():
     from dependencies import init_db
     await init_db()
+
+    if os.getenv("OPENROUTER_VALIDATE_MODELS_ON_STARTUP", "true").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from services.claude_service import ClaudeService
+            deps.llm_status = await ClaudeService().validate_configuration()
+            logging.info("LLM config status: %s", deps.llm_status.get("health"))
+        except Exception as e:
+            logging.warning("LLM config validation skipped: %s", e)
     
     from services.orchestrator import SynthesisPlanningOrchestrator
     from services.route_optimizer import RouteOptimizer

@@ -1,23 +1,70 @@
 {
-    "version": "2.0.0",
+    "version": "3.0.0",
     "params": {
-        "n_estimators": 500,
-        "max_depth": 7,
-        "learning_rate": 0.05,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "min_child_weight": 3,
-        "gamma": 0.1,
+        "candidate_models": [
+            "xgboost",
+            "random_forest",
+            "extra_trees",
+            "svm",
+            "ann_mlp"
+        ],
+        "best_model": "xgboost",
         "random_state": 42
     },
     "metrics": {
-        "train_mae": 1.0743018413744265,
-        "test_mae": 2.1687709255000183,
-        "train_r2": 0.9479349833676304,
-        "test_r2": 0.7940582845348847,
+        "train_mae": 1.3784278296845278,
+        "test_mae": 2.13351337396009,
+        "train_r2": 0.9095508333633191,
+        "test_r2": 0.7980174566717905,
         "n_samples": 4803,
         "n_features": 548,
-        "timestamp": "2026-04-25T07:15:32.304535"
+        "timestamp": "2026-05-03T18:24:20.436435",
+        "best_model": "xgboost",
+        "model_metrics": {
+            "xgboost": {
+                "train_mae": 1.693384863730832,
+                "test_mae": 2.0903008145621116,
+                "train_r2": 0.8722908772497773,
+                "test_r2": 0.807718575844291,
+                "trained_samples": 3842
+            },
+            "random_forest": {
+                "train_mae": 1.0383926970330242,
+                "test_mae": 2.158507693940279,
+                "train_r2": 0.9451066797453382,
+                "test_r2": 0.7904275033737463,
+                "trained_samples": 3842
+            },
+            "extra_trees": {
+                "train_mae": 0.7077813855243422,
+                "test_mae": 2.297742794429167,
+                "train_r2": 0.9736389857249899,
+                "test_r2": 0.7641970662327895,
+                "trained_samples": 3842
+            },
+            "svm": {
+                "train_mae": 2.0745186232431103,
+                "test_mae": 2.34957691342007,
+                "train_r2": 0.8021149264081959,
+                "test_r2": 0.7481477251888287,
+                "trained_samples": 1500
+            },
+            "ann_mlp": {
+                "train_mae": 2.116640984495042,
+                "test_mae": 2.7563307049239447,
+                "train_r2": 0.70730680401739,
+                "test_r2": 0.630679796538762,
+                "trained_samples": 2000
+            },
+            "ensemble": {
+                "train_mae": 1.3784278296845278,
+                "test_mae": 2.13351337396009,
+                "train_r2": 0.9095508333633191,
+                "test_r2": 0.7980174566717905,
+                "trained_samples": 3842
+            }
+        },
+        "skipped_models": {}
     },
     "feature_names": []
 }
